@@ -10,7 +10,6 @@ Environment:
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -92,7 +91,7 @@ def run_cycle(
     venues: Sequence[Venue],
     reference: ReferenceSource,
     sizes: Sequence[float],
-    conn: sqlite3.Connection | None = None,
+    conn: storage.Connection | None = None,
     run_id: str | None = None,
 ) -> CycleResult:
     """Quote every (pair, venue, size, side), score against the reference mid,
@@ -125,14 +124,19 @@ def run_cycle(
     return result
 
 
-def store(conn: sqlite3.Connection, result: CycleResult) -> None:
-    with conn:
+def store(conn: storage.Connection, result: CycleResult) -> None:
+    """Write one cycle in a single transaction (all or nothing)."""
+    try:
         for ref in result.references.values():
             storage.save_reference(conn, result.run_id, ref)
         for r in result.rows:
             storage.save_quote(conn, result.run_id, r.quote, r.size, r.ref_mid, r.deviation_bps)
         for f in result.failures:
             storage.save_failure(conn, result.run_id, f.ts, f.chain, f.pair, f.venue, f.side, f.size, f.error)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def print_report(result: CycleResult, out: TextIO = sys.stdout) -> None:

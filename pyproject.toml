@@ -4,15 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "execution-cost-tracker"
-version = "0.2.0"
+version = "0.3.0"
 description = "Measure execution costs: trade slippage and fees, and on-chain FX quotes against reference mids."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+# Runtime dependencies for the deployed app (Vercel installs these).
+# Each is imported only where needed: web3 in chain.py, fastapi in api.py,
+# turso_serverless in storage.connect() when TURSO_DATABASE_URL is set.
+dependencies = [
+    "fastapi>=0.115",
+    "web3>=6",
+    "turso_serverless",
+]
 
 [project.optional-dependencies]
-onchain = ["web3>=6"]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "httpx", "uvicorn"]
 
 [project.scripts]
 fxtracker = "execution_cost_tracker.run:main"

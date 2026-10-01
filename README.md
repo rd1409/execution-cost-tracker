@@ -50,7 +50,7 @@ tracker = ExecutionCostTracker.from_csv("executions.csv")
 The package also tracks tokenised FX: it quotes EURC/USDC on Base from Uniswap v3, Uniswap v4, Aerodrome and the 0x aggregator. It then compares each quote with the EUR/USD reference mid and stores the results in SQLite.
 
 ```bash
-pip install -e ".[onchain]"
+pip install -e ".[dev]"
 export BASE_RPC_URL=https://...      # optional; defaults to the public Base RPC
 export ZEROX_API_KEY=...             # optional; needed for the 0x venue
 python -m execution_cost_tracker.run --sizes 1000,10000,100000
@@ -66,6 +66,39 @@ Each cycle prints the following for every venue and size:
 Failed venues are listed with their errors and never stop the cycle. Everything is written to `fxtracker.db`; pass `--no-store` to skip writing.
 
 The reference mid comes from the ECB rates on [Frankfurter](https://frankfurter.dev). These update once per working day, so treat the comparison against mid as approximate during the trading day. To use a live feed instead, implement `reference.ReferenceSource`.
+
+## Web API and Vercel
+
+`app.py` at the repo root is the entrypoint Vercel looks for. It loads the FastAPI app in `src/execution_cost_tracker/api.py`:
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/health` | Liveness check |
+| `GET /api/pairs` | Pairs, tokens and venues a front end can offer |
+| `POST /api/quote` | On-demand quote, e.g. `{"pair": "EURC/USDC", "notional": 25000, "venues": ["uniswap_v3", "zerox"]}`. Not stored. |
+| `GET /api/cron` | Scheduled run: quotes every pair, venue and size, then stores everything. Requires `Authorization: Bearer <CRON_SECRET>`. |
+
+FastAPI also serves interactive docs at `/docs`, where you can try requests in the browser.
+
+To run it locally:
+
+```bash
+pip install -e ".[dev]"
+uvicorn app:app --reload        # then open http://127.0.0.1:8000/docs
+```
+
+To deploy:
+
+1. In Vercel, choose **Add New → Project** and import this GitHub repo. Each push to `main` then redeploys.
+2. Under **Project → Settings → Environment Variables**, set:
+   - `BASE_RPC_URL`: your Base RPC provider URL
+   - `ZEROX_API_KEY`: from dashboard.0x.org
+   - `CRON_SECRET`: a random string of 16+ characters
+   - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`: from a Turso database
+   - `MAX_NOTIONAL`: optional cap on quote size (default 1,000,000)
+3. `vercel.json` schedules `/api/cron` daily at 12:00 UTC. That is the most often the Hobby plan allows. On Pro, change the `schedule` (for example `*/15 * * * *`) and push.
+
+Storage uses Turso when `TURSO_DATABASE_URL` is set and a local `fxtracker.db` otherwise. On Vercel it refuses to fall back to a local file, because files there don't persist.
 
 ## Tests
 

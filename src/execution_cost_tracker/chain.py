@@ -1,7 +1,7 @@
 """RPC connection setup and contract helpers (web3).
 
-web3 is an optional dependency: install with ``pip install -e ".[onchain]"``.
-It is imported lazily so the rest of the package works without it.
+web3 is listed in pyproject dependencies but imported lazily, so modules that
+don't touch the chain (metrics, storage, tests) work without it installed.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def _web3_module():
         import web3  # noqa: F401
     except ImportError as e:  # pragma: no cover - depends on environment
         raise ImportError(
-            "web3 is required for on-chain venues. Install with: pip install -e \".[onchain]\""
+            "web3 is required for on-chain venues. Install with: pip install -e ."
         ) from e
     return web3
 
