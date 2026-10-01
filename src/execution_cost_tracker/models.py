@@ -141,3 +141,103 @@ class CostSummary:
             "slippage_bps": self.slippage_bps,
             "total_cost_bps": self.total_cost_bps,
         }
+
+
+# --- FX tracking ---------------------------------------------------------
+#
+# A Pair trades a base token against a quote token (EURC/USDC: base EURC,
+# quote USDC). Prices are always quoted as quote units per one base unit, so
+# they compare directly with a traditional FX mid such as EUR/USD.
+
+
+@dataclass(frozen=True)
+class Token:
+    """An ERC-20 token on a specific chain."""
+
+    symbol: str
+    address: str
+    decimals: int
+
+    def to_raw(self, amount: float) -> int:
+        """Human units to integer base units."""
+        return int(round(amount * 10**self.decimals))
+
+    def from_raw(self, raw: int) -> float:
+        """Integer base units to human units."""
+        return raw / 10**self.decimals
+
+
+@dataclass(frozen=True)
+class Pair:
+    """A tokenised FX pair on one chain.
+
+    Attributes:
+        base: The token being priced (e.g. EURC).
+        quote: The token it is priced in (e.g. USDC).
+        reference: The traditional FX pair it tracks, as "BASE/QUOTE"
+            currency codes (e.g. "EUR/USD").
+        chain: Chain name, e.g. "base".
+        chain_id: EVM chain id, e.g. 8453.
+        venue_params: Per-venue settings keyed by venue name, e.g.
+            {"uniswap_v3": {"fee_tiers": [100, 500]}}.
+    """
+
+    base: Token
+    quote: Token
+    reference: str
+    chain: str = "base"
+    chain_id: int = 8453
+    venue_params: dict = field(default_factory=dict, hash=False, compare=False)
+
+    @property
+    def name(self) -> str:
+        return f"{self.base.symbol}/{self.quote.symbol}"
+
+    def params_for(self, venue: str) -> dict:
+        return dict(self.venue_params.get(venue, {}))
+
+
+@dataclass(frozen=True)
+class Quote:
+    """One executable price from one venue for one size and direction.
+
+    ``side`` is from the trader's point of view on the base token: "buy"
+    means paying quote to receive base, "sell" means paying base to receive
+    quote. Amounts are in human units.
+    """
+
+    venue: str
+    pair: str
+    chain: str
+    side: Side
+    base_amount: float
+    quote_amount: float
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    gas_estimate: int | None = None
+    meta: dict = field(default_factory=dict, hash=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.side, Side):
+            object.__setattr__(self, "side", Side(str(self.side).lower()))
+        if self.base_amount <= 0 or self.quote_amount <= 0:
+            raise ValueError("base_amount and quote_amount must be positive")
+
+    @property
+    def price(self) -> float:
+        """Quote units per one base unit."""
+        return self.quote_amount / self.base_amount
+
+
+@dataclass(frozen=True)
+class ReferenceRate:
+    """A traditional FX mid rate, e.g. EUR/USD = 1.0850."""
+
+    pair: str
+    mid: float
+    source: str
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    as_of: str | None = None  # the source's own date/time label, if any
+
+    def __post_init__(self) -> None:
+        if self.mid <= 0:
+            raise ValueError("mid must be positive")

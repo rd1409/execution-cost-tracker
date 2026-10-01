@@ -45,6 +45,28 @@ tracker.to_csv("executions.csv")
 tracker = ExecutionCostTracker.from_csv("executions.csv")
 ```
 
+## FX tracker
+
+The package also tracks tokenised FX: it quotes EURC/USDC on Base from Uniswap v3, Uniswap v4, Aerodrome and the 0x aggregator. It then compares each quote with the EUR/USD reference mid and stores the results in SQLite.
+
+```bash
+pip install -e ".[onchain]"
+export BASE_RPC_URL=https://...      # optional; defaults to the public Base RPC
+export ZEROX_API_KEY=...             # optional; needed for the 0x venue
+python -m execution_cost_tracker.run --sizes 1000,10000,100000
+```
+
+Each cycle prints the following for every venue and size:
+
+- bid and ask in USDC per EURC
+- the cost of selling and of buying, in bps from the reference mid (positive means worse than mid)
+- the round-trip spread in bps
+- the venue mid's offset from the reference mid
+
+Failed venues are listed with their errors and never stop the cycle. Everything is written to `fxtracker.db`; pass `--no-store` to skip writing.
+
+The reference mid comes from the ECB rates on [Frankfurter](https://frankfurter.dev). These update once per working day, so treat the comparison against mid as approximate during the trading day. To use a live feed instead, implement `reference.ReferenceSource`.
+
 ## Tests
 
 ```bash

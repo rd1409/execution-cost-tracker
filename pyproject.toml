@@ -4,17 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "execution-cost-tracker"
-version = "0.1.0"
-description = "Record trade executions and measure commissions, fees and slippage."
+version = "0.2.0"
+description = "Measure execution costs: trade slippage and fees, and on-chain FX quotes against reference mids."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
+onchain = ["web3>=6"]
 dev = ["pytest>=7"]
+
+[project.scripts]
+fxtracker = "execution_cost_tracker.run:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+execution_cost_tracker = ["abis/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
