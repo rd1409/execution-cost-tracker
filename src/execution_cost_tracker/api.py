@@ -95,9 +95,13 @@ async def tradingview_webhook(request: Request):
     body = await request.body()
     client = guardrails.client_key(dict(request.headers), request.client.host if request.client else None)
     try:
-        return service.handle_tradingview_webhook(body, client, os.environ.get("TRADINGVIEW_WEBHOOK_SECRET"))
+        out = service.handle_tradingview_webhook(body, client, os.environ.get("TRADINGVIEW_WEBHOOK_SECRET"))
     except service.WebhookError as e:
+        # Shows up in Vercel's runtime logs. Never logs the body (it holds the secret).
+        print(f"tradingview webhook rejected: status={e.status} from={client} reason={e}", flush=True)
         return JSONResponse(status_code=e.status, content={"detail": str(e)})
+    print(f"tradingview webhook stored: {out['pair']} mid={out['mid']} from={client}", flush=True)
+    return out
 
 
 @app.get("/api/cron")
