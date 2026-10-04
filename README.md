@@ -116,7 +116,7 @@ TradingView has no API for pulling prices out of an account. Instead, TradingVie
 **Option A (recommended): true mid from bid and ask, using the Pine script.** TradingView alert messages have **no `{{bid}}` or `{{ask}}` placeholders**. If you type them, TradingView sends them unfilled and the app rejects the message with an explanation. Pine scripts *can* read `bid` and `ask`, but only on the 1-tick chart, so `tradingview/fx_tracker_bid_ask.pine` builds the message itself:
 
 3. In TradingView, open the **Pine Editor** (bottom panel), paste the contents of `tradingview/fx_tracker_bid_ask.pine`, **Save**, then **Add to chart** on EUR/USD.
-4. Switch the chart's timeframe to **1 tick ("1T")**. `bid` and `ask` are empty on every other timeframe.
+4. Pick the timeframe. On a **1-tick ("1T")** chart the script sends `bid` and `ask`. On any other chart (1 second, 1 minute, …) `bid` and `ask` are empty, so it sends the chart's latest price instead. That's the same as Option B, but via the script. Tick charts aren't on every TradingView plan.
 5. Open the script's **Settings** (gear icon on its label) and paste your secret from step 2. Keep the script private; don't publish it.
 6. **Create an alert:** Condition = *FX tracker: bid/ask webhook* → **Any alert() function call**. Expiration: the longest allowed. Notifications: tick **Webhook URL** and enter `https://YOUR-APP.vercel.app/api/tradingview/webhook`. Leave the Message box alone; the script supplies the message.
 
