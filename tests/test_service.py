@@ -107,7 +107,101 @@ def test_cron_cycle_stores_and_closes(tmp_path):
     assert out["references"] == {"EURC/USDC": 1.085}
     conn = storage.connect(path)
     assert len(storage.load_quotes(conn, run_id=out["run_id"])) == 8
+    assert out["errors"] == []
     conn.close()
+
+
+def test_cron_cycle_reports_errors(tmp_path):
+    class Broken(Venue):
+        name = "broken"
+
+        def simulate(self, pair, token_in, token_out, amount_in):
+            raise RuntimeError("pool reverted")
+
+    out = service.cron_cycle(
+        connect=lambda: storage.connect(tmp_path / "fx.db"),
+        reference=REF,
+        venues=[FakeVenue("ok"), Broken()],
+        sizes=[1000, 5000],
+    )
+    assert out["quotes"] == 4 and out["failures"] == 4
+    assert out["errors"] == ["EURC/USDC broken: RuntimeError: pool reverted (x4)"]
+
+
+def test_cron_cycle_reports_reference_failure(tmp_path):
+    out = service.cron_cycle(
+        connect=lambda: storage.connect(tmp_path / "fx.db"),
+        reference=StaticReference({}),
+        venues=[FakeVenue()],
+    )
+    assert out["quotes"] == 0 and out["references"] == {}
+    assert len(out["errors"]) == 1 and out["errors"][0].startswith("EURC/USDC reference: KeyError")
+
+
+# --- outgoing HTTP ---------------------------------------------------------
+
+
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def read(self, *a):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_reference_request_sets_user_agent(monkeypatch):
+    import urllib.request
+
+    from execution_cost_tracker import reference
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent")
+        return FakeResponse(b'{"date": "2026-10-02", "rates": {"USD": 1.1}}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    rate = reference.FrankfurterReference().mid("EUR/USD")
+    assert rate.mid == 1.1
+    assert seen["ua"] == reference.USER_AGENT and "Python-urllib" not in seen["ua"]
+
+
+def test_reference_http_error_is_readable(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+
+    from execution_cost_tracker import reference
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(b"blocked"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="403.*blocked"):
+        reference.FrankfurterReference().mid("EUR/USD")
+
+
+def test_zerox_request_sets_user_agent_and_keeps_headers(monkeypatch):
+    import urllib.request
+
+    from execution_cost_tracker.venues import zerox
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen.update({k.lower(): v for k, v in req.header_items()})
+        return FakeResponse(b'{"buyAmount": "1"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    zerox._http_get("https://api.0x.org/x", {"0x-api-key": "k", "0x-version": "v2"})
+    assert seen["user-agent"].startswith("execution-cost-tracker")
+    assert seen["0x-api-key"] == "k" and seen["0x-version"] == "v2"
 
 
 # --- storage backends ----------------------------------------------------

@@ -9,6 +9,7 @@ implementing :class:`ReferenceSource`.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Callable, Protocol
@@ -16,6 +17,10 @@ from typing import Callable, Protocol
 from .models import ReferenceRate
 
 FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
+
+# Python's default "Python-urllib/x.y" user agent is blocked by many sites,
+# so identify the app explicitly on every outgoing request.
+USER_AGENT = "execution-cost-tracker/0.3 (+https://github.com/rd1409/execution-cost-tracker)"
 
 
 class ReferenceSource(Protocol):
@@ -66,5 +71,10 @@ class StaticReference:
 
 
 def _http_get(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=20) as resp:
-        return json.load(resp)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:200]
+        raise RuntimeError(f"reference HTTP {e.code} from {url}: {body}") from e

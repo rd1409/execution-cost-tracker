@@ -108,7 +108,22 @@ def cron_cycle(
         "quotes": len(result.rows),
         "failures": len(result.failures),
         "references": {k: v.mid for k, v in result.references.items()},
+        "errors": summarize_failures(result),
     }
+
+
+def summarize_failures(result: CycleResult, limit: int = 10) -> list[str]:
+    """Distinct failure messages as "pair venue: error (xN)", most frequent first.
+
+    Lets a caller (or a person with curl) see why a run failed without
+    querying the failures table.
+    """
+    counts: dict[str, int] = {}
+    for f in result.failures:
+        key = f"{f.pair} {f.venue}: {f.error}"
+        counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])[:limit]
+    return [k if n == 1 else f"{k} (x{n})" for k, n in ranked]
 
 
 def result_to_dict(result: CycleResult) -> dict:

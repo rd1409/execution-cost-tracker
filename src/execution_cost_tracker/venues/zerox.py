@@ -14,6 +14,7 @@ import urllib.request
 from typing import Callable
 
 from ..models import Pair, Token
+from ..reference import USER_AGENT
 from .base import SwapResult, Venue, VenueError
 
 PRICE_URL = "https://api.0x.org/swap/permit2/price"
@@ -22,7 +23,7 @@ HttpGet = Callable[[str, dict], dict]
 
 
 def _http_get(url: str, headers: dict) -> dict:
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json", **headers})
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             return json.load(resp)
