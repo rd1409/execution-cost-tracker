@@ -16,19 +16,22 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Iterable, Sequence, TextIO
 
-from . import metrics, storage
-from .models import Pair, Quote, ReferenceRate, Side, Token
+from . import metrics, registry, storage
+from .models import Pair, Quote, ReferenceRate, Side
 from .reference import FrankfurterReference, ReferenceSource
 from .venues import VENUES, Venue
 
-# Circle stablecoins on Base (https://developers.circle.com/stablecoins/eurc-contract-addresses).
-BASE_USDC = Token("USDC", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 6)
-BASE_EURC = Token("EURC", "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42", 6)
+BOTH_SIDES = (Side.SELL, Side.BUY)
 
-DEFAULT_PAIRS = [
-    Pair(base=BASE_EURC, quote=BASE_USDC, reference="EUR/USD", chain="base", chain_id=8453),
-]
-DEFAULT_SIZES = [1_000.0, 10_000.0, 100_000.0]
+
+def default_pairs() -> list[Pair]:
+    """Every pair on every chain listed in config.yaml."""
+    return list(registry.get().pairs)
+
+
+def default_sizes() -> list[float]:
+    """The sizes the scheduled run quotes (config.yaml ``cron.sizes``)."""
+    return list(registry.get().cron_sizes)
 
 
 @dataclass
@@ -93,10 +96,12 @@ def run_cycle(
     sizes: Sequence[float],
     conn: storage.Connection | None = None,
     run_id: str | None = None,
+    sides: Sequence[Side] = BOTH_SIDES,
 ) -> CycleResult:
     """Quote every (pair, venue, size, side), score against the reference mid,
     and store everything if ``conn`` is given. Venue failures never abort the
     cycle; they are collected in ``result.failures``."""
+    sides = [s if isinstance(s, Side) else Side(str(s).lower()) for s in sides]
     result = CycleResult(run_id=run_id or uuid.uuid4().hex[:12])
 
     for pair in pairs:
@@ -111,7 +116,7 @@ def run_cycle(
             if not venue.supports(pair):
                 continue
             for size in sizes:
-                for side in (Side.SELL, Side.BUY):
+                for side in sides:
                     try:
                         q = venue.quote(pair, side, size, ref.mid)
                     except Exception as e:
@@ -188,15 +193,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Run one FX tracking cycle.")
     p.add_argument("--db", default="fxtracker.db", help="SQLite path (default: fxtracker.db)")
     p.add_argument("--no-store", action="store_true", help="print only, don't write to the database")
-    p.add_argument("--sizes", default=",".join(str(int(s)) for s in DEFAULT_SIZES), help="base-token sizes, comma separated")
+    p.add_argument("--sizes", default=None, help="base-token sizes, comma separated (default: config.yaml cron.sizes)")
     p.add_argument("--venues", default=",".join(VENUES), help="venues, comma separated")
     args = p.parse_args(argv)
 
-    sizes = [float(s) for s in args.sizes.split(",") if s.strip()]
+    sizes = [float(s) for s in args.sizes.split(",") if s.strip()] if args.sizes else default_sizes()
     venues = build_venues(v.strip() for v in args.venues.split(",") if v.strip())
     conn = None if args.no_store else storage.connect(args.db)
     try:
-        result = run_cycle(DEFAULT_PAIRS, venues, FrankfurterReference(), sizes, conn)
+        result = run_cycle(default_pairs(), venues, FrankfurterReference(), sizes, conn)
     finally:
         if conn is not None:
             conn.close()

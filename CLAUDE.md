@@ -7,16 +7,20 @@ Guidance for Claude when working in this repository.
 Execution Cost Tracker is a Python package with two parts:
 
 1. **Trade cost tracking.** It records trade executions and measures their costs: commissions, fees, and slippage against a benchmark price (arrival mid, decision price, VWAP, etc.).
-2. **FX tracking.** It quotes tokenised FX pairs (EURC/USDC on Base) from on-chain venues and an aggregator. It then scores each quote against a traditional FX reference mid and stores the results in SQLite.
+2. **FX tracking.** It quotes tokenised FX pairs (EURC/USDC on Base) from on-chain venues and an aggregator. It then scores each quote against a traditional FX reference mid and stores the results in SQLite or Turso. A public page lets users price a trade on demand, and a daily scheduled run builds history.
 
 ## Layout
 
 ```
 app.py               # Vercel entrypoint: puts src/ on the path, exposes `app`
 vercel.json          # function maxDuration, excluded files, daily cron -> /api/cron
+config.yaml          # registry: chains, tokens, pairs, limits, guardrails, cron sizes
+public/index.html    # front-end page (single file, inline CSS/JS), served at /
 src/execution_cost_tracker/
-    api.py           # FastAPI routes only: /api/health, /api/pairs, /api/quote, /api/cron
-    service.py       # API logic, framework-free: QuoteParams validation, quote, cron auth, cron_cycle
+    api.py           # FastAPI routes only: /, /api/health, /api/config, /api/pairs, /api/quote, /api/cron
+    service.py       # API logic, framework-free: QuoteParams validation, config_view, quote, guarded_quote, cron
+    registry.py      # loads and validates config.yaml (FX_CONFIG env overrides the path)
+    guardrails.py    # in-memory sliding-window rate limiter, TTL cache, client IP key
     __init__.py      # public API
     models.py        # Execution, CostSummary (trade costs); Token, Pair, Quote, ReferenceRate (FX)
     tracker.py       # ExecutionCostTracker: record, filter, summarise, CSV I/O
@@ -37,6 +41,8 @@ tests/
     test_metrics.py  # FX metrics
     test_fx_run.py   # venues (with fakes), reference parsing, storage, run cycle
     test_service.py  # API logic, cron auth, storage backends (offline)
+    test_registry.py # config.yaml loading and validation
+    test_guardrails.py # rate limiter, cache, guarded_quote (fake clock)
     test_api.py      # HTTP routes via TestClient (skipped if fastapi/httpx missing)
 ```
 
@@ -64,7 +70,11 @@ Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL
 - **Venues:** subclass `Venue` and implement `simulate()`. Try candidate pools with `best_of()`, and raise `VenueError` when nothing quotes. Register new venues in `venues/__init__.py`.
 - A venue failure must never abort a cycle. `run_cycle` records it in `failures`.
 - Contract addresses live as per-chain dicts at the top of each venue module, each with a source comment. Verify new addresses against official docs or Basescan before adding them.
-- **Dependencies:** runtime deps (`fastapi`, `web3`, `turso_serverless`) are listed in `pyproject.toml` so Vercel installs them. Each is imported in exactly one place: `api.py`, `chain.py` (lazily), and `storage.connect()` (only when Turso is configured). Everything else uses the standard library only.
+- **Dependencies:** runtime deps (`fastapi`, `web3`, `turso_serverless`, `pyyaml`) are listed in `pyproject.toml` so Vercel installs them. Each is imported in exactly one place: `api.py`, `chain.py` (lazily), `storage.connect()` (only when Turso is configured), and `registry.load()`. Everything else uses the standard library only.
+- **Registry:** chains, tokens, pairs and limits live in `config.yaml`, never hard-coded. Code gets them from `registry.get()`. Adding a token or pair is a config change. Adding a chain also needs venue contract addresses in the venue modules. Any new field gets validation in `registry.parse()` and a test in `test_registry.py`.
+- **Front end:** `public/index.html` is one self-contained file that builds its form from `/api/config` and never holds keys. It calls only this app's `/api/...` endpoints. Keep it working with `side` = buy, sell or both, and with any number of venues.
+- **Guardrails:** every public quote goes through `service.guarded_quote`, which checks the cache, then the per-client limit, then the global limit. Network calls happen outside the lock. Only results with at least one quote are cached.
+- **Cross-chain:** `QuoteParams` accepts `source_chain`/`destination_chain` but rejects different values until bridge routes exist.
 - **API layering:** keep `api.py` to HTTP mapping only. Validation and logic go in `service.py`, which must not import FastAPI so it stays testable offline.
 - The `/api/cron` endpoint must stay closed unless `CRON_SECRET` is set and matches. Public inputs are validated against known pairs and venues and capped by `MAX_NOTIONAL`.
 - Storage code goes through cursors and `conn.commit()`, never `sqlite3`-only features (`row_factory`, `executescript`, `with conn:`), so it works with both SQLite and Turso.

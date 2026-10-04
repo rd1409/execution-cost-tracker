@@ -134,3 +134,18 @@ def test_run_cycle_scores_stores_and_prints(tmp_path):
 def test_run_cycle_reference_failure_skips_pair():
     result = run_cycle([PAIR], [FakeVenue("v", 1, 1)], StaticReference({}), [1000])
     assert result.rows == [] and result.failures[0].venue == "reference"
+
+
+def test_run_cycle_single_side():
+    result = run_cycle([PAIR], [FakeVenue("v", 1.084, 1.086)], StaticReference({"EUR/USD": 1.085}), [1000], sides=["buy"])
+    assert [r.quote.side for r in result.rows] == [Side.BUY]
+    spread = result.spreads()[0]
+    assert spread["bid"] is None and spread["ask"] is not None and spread["spread_bps"] is None
+
+
+def test_default_pairs_and_sizes_come_from_config():
+    from execution_cost_tracker import registry
+    from execution_cost_tracker.run import default_pairs, default_sizes
+
+    reg = registry.get()
+    assert default_pairs() == list(reg.pairs) and default_sizes() == list(reg.cron_sizes)

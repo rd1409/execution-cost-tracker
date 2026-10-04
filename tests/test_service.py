@@ -44,11 +44,76 @@ def test_quote_params_defaults_are_valid():
         {"notional": 10**12},
         {"venues": []},
         {"venues": ["nope"]},
+        {"notional": float("nan")},
+        {"notional": float("inf")},
+        {"notional": "lots"},
+        {"side": "short"},
+        {"source_chain": "solana"},
+        {"destination_chain": "solana"},
     ],
 )
 def test_quote_params_rejects_bad_input(kwargs):
     with pytest.raises(ValueError):
         service.QuoteParams(**kwargs)
+
+
+def test_quote_params_rejects_cross_chain_for_now(monkeypatch):
+    from execution_cost_tracker import registry
+
+    reg = registry.parse(
+        {
+            "chains": {
+                k: {
+                    "chain_id": i,
+                    "tokens": {
+                        "USDC": {"address": "0x" + "1" * 40, "decimals": 6},
+                        "EURC": {"address": "0x" + "2" * 40, "decimals": 6},
+                    },
+                }
+                for i, k in ((8453, "base"), (42161, "arbitrum"))
+            },
+            "pairs": [{"base": "EURC", "quote": "USDC", "reference": "EUR/USD", "chains": ["base", "arbitrum"]}],
+        }
+    )
+    with pytest.raises(ValueError, match="cross-chain"):
+        service.QuoteParams(source_chain="base", destination_chain="arbitrum", registry=reg)
+    # No venue contracts are configured on arbitrum yet; only the 0x API (any chain) works there.
+    assert service.QuoteParams(source_chain="arbitrum", registry=reg).venues == ["zerox"]
+    with pytest.raises(ValueError, match="can't quote on arbitrum"):
+        service.QuoteParams(source_chain="arbitrum", venues=["uniswap_v3"], registry=reg)
+
+
+def test_quote_params_normalises():
+    p = service.QuoteParams(side="BUY", notional="2500", destination_chain="", venues=["zerox", "zerox"])
+    assert p.side == "buy" and p.notional == 2500.0
+    assert p.destination_chain == "base" and p.venues == ["zerox"]
+    assert p.sides == (Side.BUY,)
+    assert service.QuoteParams(side="both").sides == (Side.SELL, Side.BUY)
+    assert p.cache_key() == service.QuoteParams(side="buy", notional=2500, venues=["zerox"]).cache_key()
+    assert p.cache_key() != service.QuoteParams(side="sell", notional=2500, venues=["zerox"]).cache_key()
+
+
+def test_quote_single_side_and_best():
+    out = service.quote(
+        service.QuoteParams(notional=5000, side="sell", venues=["uniswap_v3", "zerox"]),
+        reference=REF,
+        venue_factory=lambda names: [FakeVenue("uniswap_v3", 1.083), FakeVenue("zerox", 1.084)],
+    )
+    assert {q["side"] for q in out["quotes"]} == {"sell"} and len(out["quotes"]) == 2
+    assert out["best"]["sell"]["venue"] == "zerox" and "buy" not in out["best"]
+    assert out["request"]["side"] == "sell" and out["request"]["destination_chain"] == "base"
+
+
+def test_config_view_for_front_end():
+    cfg = service.config_view()
+    json.dumps(cfg)
+    assert [c["key"] for c in cfg["chains"]] == ["base"]
+    pair = next(p for p in cfg["pairs"] if p["pair"] == "EURC/USDC")
+    assert pair["chains"] == ["base"] and pair["reference"] == "EUR/USD"
+    assert set(pair["venues"]["base"]) == {"uniswap_v3", "uniswap_v4", "aerodrome", "zerox"}
+    assert {v["name"]: v["label"] for v in cfg["venues"]}["zerox"] == "0x (aggregator)"
+    assert cfg["sides"] == ["both", "buy", "sell"] and cfg["cross_chain"] is False
+    assert cfg["limits"]["max_notional"] >= cfg["limits"]["min_notional"] > 0
 
 
 def test_max_notional_from_env(monkeypatch):

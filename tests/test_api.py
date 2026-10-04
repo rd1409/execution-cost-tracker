@@ -7,7 +7,7 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from execution_cost_tracker import api, service  # noqa: E402
+from execution_cost_tracker import api, guardrails, service  # noqa: E402
 
 
 @pytest.fixture
@@ -23,23 +23,51 @@ def test_pairs(client):
     assert any(p["pair"] == "EURC/USDC" for p in client.get("/api/pairs").json())
 
 
+def test_index_serves_front_end(client):
+    r = client.get("/")
+    assert r.status_code == 200 and "FX execution check" in r.text
+
+
+def test_config(client):
+    cfg = client.get("/api/config").json()
+    assert any(p["pair"] == "EURC/USDC" for p in cfg["pairs"]) and cfg["limits"]["max_notional"] > 0
+
+
 def test_quote_rejects_bad_input(client):
     assert client.post("/api/quote", json={"notional": 10**12}).status_code == 400
     assert client.post("/api/quote", json={"pair": "BTC/USDC"}).status_code == 400
+    assert client.post("/api/quote", json={"side": "short"}).status_code == 400
+    assert client.post("/api/quote", json={"destination_chain": "solana"}).status_code == 400
     assert client.post("/api/quote", json={"notional": -1}).status_code == 422
 
 
-def test_quote_calls_service(client, monkeypatch):
+def test_quote_calls_guarded_service(client, monkeypatch):
     seen = {}
 
-    def fake_quote(params):
-        seen["params"] = params
+    def fake_guarded(params, client_id):
+        seen["params"], seen["client"] = params, client_id
         return {"rows": []}
 
-    monkeypatch.setattr(service, "quote", fake_quote)
-    r = client.post("/api/quote", json={"notional": 5000, "venues": ["zerox"]})
+    monkeypatch.setattr(service, "guarded_quote", fake_guarded)
+    r = client.post(
+        "/api/quote",
+        json={"notional": 5000, "venues": ["zerox"], "side": "buy"},
+        headers={"X-Real-IP": "9.9.9.9"},
+    )
     assert r.status_code == 200 and r.json() == {"rows": []}
-    assert seen["params"].notional == 5000 and seen["params"].venues == ["zerox"]
+    p = seen["params"]
+    assert p.notional == 5000 and p.venues == ["zerox"] and p.side == "buy" and p.destination_chain == "base"
+    assert seen["client"] == "9.9.9.9"
+
+
+def test_quote_rate_limited_returns_429(client, monkeypatch):
+    def limited(params, client_id):
+        raise guardrails.RateLimited("client", 7)
+
+    monkeypatch.setattr(service, "guarded_quote", limited)
+    r = client.post("/api/quote", json={})
+    assert r.status_code == 429 and r.headers["Retry-After"] == "7"
+    assert r.json()["retry_after"] == 7 and "7s" in r.json()["detail"]
 
 
 def test_cron_requires_secret(client, monkeypatch):

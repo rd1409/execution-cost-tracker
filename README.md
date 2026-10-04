@@ -73,10 +73,22 @@ The reference mid comes from the ECB rates on [Frankfurter](https://frankfurter.
 
 | Endpoint | What it does |
 |---|---|
+| `GET /` | The front-end page (`public/index.html`) |
 | `GET /api/health` | Liveness check |
-| `GET /api/pairs` | Pairs, tokens and venues a front end can offer |
-| `POST /api/quote` | On-demand quote, e.g. `{"pair": "EURC/USDC", "notional": 25000, "venues": ["uniswap_v3", "zerox"]}`. Not stored. |
+| `GET /api/config` | Chains, tokens, pairs, venues and limits the front end builds its form from |
+| `GET /api/pairs` | One entry per pair and chain, with token details |
+| `POST /api/quote` | On-demand quote, not stored. Rate limited and briefly cached; see below. |
 | `GET /api/cron` | Scheduled run: quotes every pair, venue and size, then stores everything. Requires `Authorization: Bearer <CRON_SECRET>`. |
+
+An example `POST /api/quote` body (every field is optional):
+
+```json
+{"pair": "EURC/USDC", "notional": 25000, "side": "both",
+ "source_chain": "base", "destination_chain": "base",
+ "venues": ["uniswap_v3", "aerodrome", "zerox"]}
+```
+
+`side` is `buy`, `sell` or `both`. `destination_chain` defaults to `source_chain`. Different source and destination chains are rejected for now, because cross-chain routes aren't built yet. `venues` defaults to every venue that works on the chain.
 
 FastAPI also serves interactive docs at `/docs`, where you can try requests in the browser.
 
@@ -84,8 +96,23 @@ To run it locally:
 
 ```bash
 pip install -e ".[dev]"
-uvicorn app:app --reload        # then open http://127.0.0.1:8000/docs
+uvicorn app:app --reload        # then open http://127.0.0.1:8000 (page) or /docs
 ```
+
+### The registry: `config.yaml`
+
+`config.yaml` at the repo root lists the chains, tokens (address and decimals) and pairs. It also sets the size limits, guardrails and the sizes the scheduled run quotes. The API only accepts what's listed there, and the front end's dropdowns are built from it. To add a token or pair on Base, edit the file and push; no code changes are needed. The app checks the file on startup and refuses malformed addresses, unknown tokens or chains, and duplicate pairs.
+
+### Guardrails on `/api/quote`
+
+Because the page is public, each quote request costs RPC calls and 0x API calls:
+
+- **Size limits:** `limits.min_notional` / `limits.max_notional` in `config.yaml`. The `MAX_NOTIONAL` env var overrides the maximum.
+- **Known inputs only:** pairs, chains and venues must be in the registry, and the venue must work on that chain.
+- **Rate limits:** `guardrails.per_client_per_minute` (per visitor IP) and `guardrails.global_per_minute`. Over the limit, the API returns HTTP 429 with a `Retry-After` header.
+- **Short cache:** an identical request within `guardrails.cache_seconds` gets the previous answer without new RPC calls, and doesn't count against the limits. Failed results aren't cached.
+
+The rate limits and cache live in memory, so on Vercel they apply per running instance. They stop casual abuse. For hard limits, add a rate-limit rule in Vercel's Firewall or a shared store such as Redis.
 
 To deploy:
 

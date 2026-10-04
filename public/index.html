@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FX Execution Check</title>
+<meta name="description" content="Price a tokenised FX trade across on-chain venues and see what it costs against the reference rate.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #e9eef2;
+  --panel: #f6f8fa;
+  --ink: #17232f;
+  --muted: #5a6876;
+  --rule: #c6d0d9;
+  --buy: #146c78;
+  --sell: #9b3448;
+  --mid: #a8862a;
+  --focus: #2a5bd7;
+  --bad: #9b3448;
+  --best-bg: #dfeef0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #10171e;
+    --panel: #172029;
+    --ink: #e2e8ee;
+    --muted: #93a2b0;
+    --rule: #2c3945;
+    --buy: #4fb7c4;
+    --sell: #e07a8e;
+    --mid: #d8b55a;
+    --focus: #8fb0ff;
+    --bad: #f08a9c;
+    --best-bg: #17323a;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #10171e; --panel: #172029; --ink: #e2e8ee; --muted: #93a2b0; --rule: #2c3945;
+  --buy: #4fb7c4; --sell: #e07a8e; --mid: #d8b55a; --focus: #8fb0ff; --bad: #f08a9c; --best-bg: #17323a;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 32px 16px 64px; }
+
+header.page { margin-bottom: 28px; max-width: 62ch; }
+header.page h1 {
+  font-size: clamp(2rem, 4.2vw, 3.1rem);
+  font-stretch: 72%;
+  font-weight: 650;
+  line-height: 1.02;
+  letter-spacing: -0.01em;
+  margin: 0 0 10px;
+}
+header.page p { margin: 0; color: var(--muted); }
+
+.layout { display: grid; grid-template-columns: minmax(280px, 340px) 1fr; gap: 28px; align-items: start; }
+@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+
+/* ticket */
+form.ticket {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 20px;
+  display: grid;
+  gap: 18px;
+}
+.field { display: grid; gap: 6px; }
+.field > label, fieldset > legend { font-weight: 600; font-size: 0.92rem; }
+fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
+select, input[type="number"] {
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 9px 10px;
+  width: 100%;
+}
+.chains { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.notional { position: relative; }
+.notional input { padding-right: 64px; font-size: 1.25rem; font-stretch: 80%; font-weight: 600; }
+.notional .unit { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-weight: 600; }
+.presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.presets button {
+  font: inherit; font-size: 0.85rem; color: var(--ink);
+  background: transparent; border: 1px solid var(--rule); border-radius: 999px;
+  padding: 3px 10px; cursor: pointer;
+}
+.presets button:hover { border-color: var(--muted); }
+
+.segmented { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+.segmented input { position: absolute; opacity: 0; pointer-events: none; }
+.segmented label {
+  text-align: center; padding: 8px 4px; cursor: pointer; font-weight: 500;
+  border-left: 1px solid var(--rule); background: var(--paper);
+}
+.segmented label:first-of-type { border-left: 0; }
+.segmented input:checked + label { background: var(--ink); color: var(--paper); }
+.segmented input:focus-visible + label { outline: 2px solid var(--focus); outline-offset: -3px; }
+
+.venue-list { display: grid; gap: 4px; }
+.venue-list label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+.venue-list input { width: 16px; height: 16px; accent-color: var(--ink); }
+
+.hint { font-size: 0.85rem; color: var(--muted); margin: 0; }
+.hint.warn { color: var(--bad); }
+
+button.go {
+  font: inherit; font-weight: 650; font-size: 1.05rem;
+  background: var(--ink); color: var(--paper);
+  border: 0; border-radius: 4px; padding: 12px; cursor: pointer;
+}
+button.go:disabled { opacity: 0.55; cursor: progress; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* results */
+.results { min-width: 0; }
+.status { margin: 0 0 14px; color: var(--muted); min-height: 1.5em; }
+.status.error { color: var(--bad); font-weight: 500; }
+
+.refline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; margin-bottom: 18px; }
+.refline .rate { font-size: clamp(2.2rem, 5vw, 3.4rem); font-stretch: 66%; font-weight: 650; line-height: 1; }
+.refline .what { color: var(--muted); }
+.refline .what b { color: var(--ink); font-weight: 600; }
+
+.best { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 22px; }
+.best .pick { border-top: 3px solid var(--rule); padding-top: 8px; }
+.best .pick.buy { border-color: var(--buy); }
+.best .pick.sell { border-color: var(--sell); }
+.best .pick p { margin: 0; }
+.best .pick .who { font-size: 1.35rem; font-weight: 650; font-stretch: 85%; }
+.best .pick .num { color: var(--muted); }
+
+/* spread ladder */
+.ladder { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px 10px; margin-bottom: 22px; }
+.ladder h2, .table-wrap h2 { font-size: 1rem; margin: 0 0 2px; }
+.ladder .sub { margin: 0 0 12px; font-size: 0.85rem; color: var(--muted); }
+.lrow { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 10px; height: 34px; }
+.lrow .name { font-size: 0.9rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track { position: relative; height: 100%; }
+.track .midline { position: absolute; top: -6px; bottom: -6px; left: 50%; width: 2px; margin-left: -1px; background: var(--mid); }
+.track .span { position: absolute; top: 50%; height: 2px; margin-top: -1px; background: var(--muted); opacity: 0.6; }
+.dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid var(--panel); }
+.dot.sell { background: var(--sell); border-radius: 2px; transform: rotate(45deg); }
+.dot.buy { background: var(--buy); }
+.axis { display: grid; grid-template-columns: 120px 1fr; gap: 10px; margin-top: 4px; }
+.axis .ticks { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.82rem; color: var(--muted); margin-top: 10px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.legend i.sell { background: var(--sell); border-radius: 1px; transform: rotate(45deg); }
+.legend i.buy { background: var(--buy); }
+.legend i.mid { width: 2px; height: 12px; border-radius: 0; background: var(--mid); }
+
+/* table */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.9rem; font-stretch: 92%; }
+th, td { text-align: right; padding: 8px 9px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child, th.l, td.l { text-align: left; }
+th { font-weight: 600; color: var(--muted); font-size: 0.82rem; }
+td.price { font-stretch: 78%; font-weight: 600; font-size: 1rem; }
+tr.is-best td { background: var(--best-bg); }
+.tag { display: inline-block; font-size: 0.72rem; font-weight: 650; padding: 1px 6px; border-radius: 3px; margin-left: 6px; background: var(--ink); color: var(--paper); vertical-align: 1px; }
+.side-buy { color: var(--buy); font-weight: 600; }
+.side-sell { color: var(--sell); font-weight: 600; }
+
+.fails { margin-top: 18px; font-size: 0.88rem; }
+.fails summary { cursor: pointer; color: var(--bad); font-weight: 500; }
+.fails ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+.foot { margin-top: 22px; font-size: 0.82rem; color: var(--muted); max-width: 75ch; }
+
+.empty { border: 1px dashed var(--rule); border-radius: 6px; padding: 28px 20px; color: var(--muted); }
+.empty p { margin: 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .dot, .span { transition: left 220ms ease, width 220ms ease; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="page">
+    <h1>FX execution check</h1>
+    <p>Price a tokenised FX trade across on-chain venues and see what each fill costs against the traditional reference rate.</p>
+  </header>
+
+  <div class="layout">
+    <form class="ticket" id="ticket" novalidate>
+      <div class="field">
+        <label for="pair">Pair</label>
+        <select id="pair" name="pair" required></select>
+      </div>
+
+      <div class="chains">
+        <div class="field">
+          <label for="source_chain">Starts on</label>
+          <select id="source_chain" name="source_chain"></select>
+        </div>
+        <div class="field">
+          <label for="destination_chain">Ends on</label>
+          <select id="destination_chain" name="destination_chain"></select>
+        </div>
+      </div>
+      <p class="hint" id="chain-hint" hidden></p>
+
+      <fieldset>
+        <legend>Side</legend>
+        <div class="segmented" role="radiogroup" aria-label="Side">
+          <input type="radio" name="side" id="side-both" value="both" checked><label for="side-both">Both</label>
+          <input type="radio" name="side" id="side-buy" value="buy"><label for="side-buy">Buy</label>
+          <input type="radio" name="side" id="side-sell" value="sell"><label for="side-sell">Sell</label>
+        </div>
+      </fieldset>
+
+      <div class="field">
+        <label for="notional">Size</label>
+        <div class="notional">
+          <input type="number" id="notional" name="notional" value="10000" min="1" step="any" inputmode="decimal" required>
+          <span class="unit" id="unit">EURC</span>
+        </div>
+        <div class="presets" aria-label="Common sizes">
+          <button type="button" data-size="1000">1k</button>
+          <button type="button" data-size="10000">10k</button>
+          <button type="button" data-size="100000">100k</button>
+          <button type="button" data-size="500000">500k</button>
+        </div>
+        <p class="hint" id="limits-hint"></p>
+      </div>
+
+      <fieldset>
+        <legend>Venues</legend>
+        <div class="venue-list" id="venues"></div>
+      </fieldset>
+
+      <button class="go" type="submit" id="go">Get quotes</button>
+    </form>
+
+    <section class="results" aria-labelledby="results-title">
+      <h2 id="results-title" class="visually-hidden" style="position:absolute;left:-9999px">Results</h2>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div id="out">
+        <div class="empty"><p>Choose a size and get quotes to compare venues side by side.</p></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var config = null;
+
+  var fmt = {
+    price: function (v) { return v == null ? "–" : v.toFixed(5); },
+    bps: function (v) {
+      if (v == null || !isFinite(v)) return "–";
+      var s = Math.abs(v) < 0.005 ? "0.00" : v.toFixed(2);
+      return (v > 0.004 ? "+" : "") + s;
+    },
+    amt: function (v) {
+      return v == null ? "–" : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    },
+    size: function (v) { return Number(v).toLocaleString(undefined, { maximumFractionDigits: 6 }); }
+  };
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function venueLabel(name) {
+    if (!config) return name;
+    for (var i = 0; i < config.venues.length; i++) if (config.venues[i].name === name) return config.venues[i].label;
+    return name;
+  }
+
+  function status(msg, isError) {
+    var el = $("status");
+    el.textContent = msg || "";
+    el.className = "status" + (isError ? " error" : "");
+  }
+
+  // ---- form setup from /api/config ----------------------------------------
+
+  function currentPair() {
+    var name = $("pair").value;
+    for (var i = 0; i < config.pairs.length; i++) if (config.pairs[i].pair === name) return config.pairs[i];
+    return null;
+  }
+
+  function fillChains() {
+    var pair = currentPair();
+    var chains = config.chains.filter(function (c) { return pair && pair.chains.indexOf(c.key) >= 0; });
+    ["source_chain", "destination_chain"].forEach(function (id) {
+      var sel = $(id), keep = sel.value;
+      sel.innerHTML = chains.map(function (c) {
+        return '<option value="' + esc(c.key) + '">' + esc(c.name) + "</option>";
+      }).join("");
+      if (keep && chains.some(function (c) { return c.key === keep; })) sel.value = keep;
+    });
+    $("unit").textContent = pair ? pair.base : "";
+    fillVenues();
+    checkChains();
+  }
+
+  function fillVenues() {
+    var pair = currentPair();
+    var chain = $("source_chain").value;
+    var names = (pair && pair.venues[chain]) || [];
+    $("venues").innerHTML = names.map(function (n) {
+      return '<label><input type="checkbox" name="venue" value="' + esc(n) + '" checked> ' + esc(venueLabel(n)) + "</label>";
+    }).join("") || '<p class="hint">No venues are set up on this chain yet.</p>';
+  }
+
+  function checkChains() {
+    var cross = $("source_chain").value !== $("destination_chain").value;
+    var hint = $("chain-hint");
+    hint.hidden = !cross;
+    hint.className = "hint warn";
+    hint.textContent = cross ? "Cross-chain routes aren't available yet. Pick the same chain for both." : "";
+    $("go").disabled = cross;
+  }
+
+  function init() {
+    status("Loading pairs…");
+    fetch("/api/config").then(function (r) {
+      if (!r.ok) throw new Error("Couldn't load pairs (HTTP " + r.status + ").");
+      return r.json();
+    }).then(function (cfg) {
+      config = cfg;
+      $("pair").innerHTML = cfg.pairs.map(function (p) {
+        return '<option value="' + esc(p.pair) + '">' + esc(p.pair) + " (tracks " + esc(p.reference) + ")</option>";
+      }).join("");
+      var lim = cfg.limits;
+      $("notional").min = lim.min_notional;
+      $("notional").max = lim.max_notional;
+      $("limits-hint").textContent = "Between " + fmt.size(lim.min_notional) + " and " + fmt.size(lim.max_notional) + ".";
+      document.querySelectorAll(".presets button").forEach(function (b) {
+        b.hidden = Number(b.dataset.size) > lim.max_notional;
+      });
+      fillChains();
+      status("");
+    }).catch(function (e) { status(e.message, true); });
+  }
+
+  // ---- submit ---------------------------------------------------------------
+
+  function readForm() {
+    var venues = Array.prototype.map.call(
+      document.querySelectorAll('input[name="venue"]:checked'), function (i) { return i.value; });
+    return {
+      pair: $("pair").value,
+      source_chain: $("source_chain").value,
+      destination_chain: $("destination_chain").value,
+      side: document.querySelector('input[name="side"]:checked').value,
+      notional: Number($("notional").value),
+      venues: venues
+    };
+  }
+
+  function validate(req) {
+    var lim = config.limits;
+    if (!isFinite(req.notional) || req.notional < lim.min_notional || req.notional > lim.max_notional)
+      return "Enter a size between " + fmt.size(lim.min_notional) + " and " + fmt.size(lim.max_notional) + ".";
+    if (!req.venues.length) return "Pick at least one venue.";
+    return null;
+  }
+
+  function submit(ev) {
+    ev.preventDefault();
+    if (!config) return;
+    var req = readForm();
+    var problem = validate(req);
+    if (problem) { status(problem, true); return; }
+
+    $("go").disabled = true;
+    status("Getting quotes from " + req.venues.length + " venue" + (req.venues.length > 1 ? "s" : "") + "…");
+    fetch("/api/quote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req)
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) { return { r: r, body: body }; });
+    }).then(function (x) {
+      if (x.r.status === 429) throw new Error(x.body.detail || "Too many requests. Wait a moment and try again.");
+      if (!x.r.ok) {
+        var d = x.body.detail;
+        if (Array.isArray(d)) d = d.map(function (e) { return e.msg; }).join("; ");
+        throw new Error(d || "Quote request failed (HTTP " + x.r.status + ").");
+      }
+      render(x.body);
+      var n = x.body.quotes.length;
+      status(n ? (x.body.cached ? "Showing a result from " + x.body.cache_age_seconds + "s ago for the same request." : "")
+               : "No venue returned a quote. Details below.", !n);
+    }).catch(function (e) {
+      status(e.message || "Couldn't reach the server.", true);
+    }).then(function () { $("go").disabled = false; checkChains(); });
+  }
+
+  // ---- render ---------------------------------------------------------------
+
+  function render(res) {
+    var req = res.request;
+    var pairCfg = currentPair();
+    var ref = res.references[req.pair];
+    var mid = ref ? ref.mid : null;
+    var html = "";
+
+    if (ref) {
+      html += '<div class="refline"><span class="rate">' + mid.toFixed(4) + '</span>' +
+        '<span class="what"><b>' + esc(ref.pair) + '</b> reference rate' +
+        (ref.as_of ? ", ECB fix of " + esc(ref.as_of) : "") + "</span></div>";
+    }
+
+    // best per side
+    var best = res.best || {};
+    var picks = ["sell", "buy"].filter(function (s) { return best[s]; }).map(function (s) {
+      var b = best[s];
+      var verb = s === "buy"
+        ? "Buy " + fmt.size(b.base_amount.toFixed(2)) + " " + pairCfg.base + " for " + fmt.amt(b.quote_amount) + " " + pairCfg.quote
+        : "Sell " + fmt.size(b.base_amount) + " " + pairCfg.base + " for " + fmt.amt(b.quote_amount) + " " + pairCfg.quote;
+      return '<div class="pick ' + s + '"><p class="num">Best to ' + s + "</p>" +
+        '<p class="who">' + esc(venueLabel(b.venue)) + "</p>" +
+        '<p class="num">' + esc(verb) + "</p>" +
+        '<p class="num">' + fmt.bps(b.deviation_bps) + " bps vs reference</p></div>";
+    });
+    if (picks.length) html += '<div class="best">' + picks.join("") + "</div>";
+
+    if (res.quotes.length && mid) html += ladder(res, mid);
+    if (res.quotes.length) html += table(res, mid, pairCfg);
+
+    if (res.failures.length) {
+      html += '<details class="fails"' + (res.quotes.length ? "" : " open") + "><summary>" +
+        res.failures.length + " attempt" + (res.failures.length > 1 ? "s" : "") + " failed</summary><ul>" +
+        res.failures.map(function (f) {
+          return "<li><b>" + esc(f.venue === "reference" ? "Reference rate" : venueLabel(f.venue)) + "</b>" +
+            (f.side && f.side !== "-" ? " (" + esc(f.side) + ")" : "") + ": " + esc(f.error) + "</li>";
+        }).join("") + "</ul></details>";
+    }
+
+    html += '<p class="foot">Costs are measured against the reference rate, which updates once per working day, so a few basis points of drift during the day are expected. Positive means worse than the reference. Gas isn\'t included. ' +
+      (res.cached ? "This result was cached; identical requests within a few seconds reuse it." : "") + "</p>";
+
+    $("out").innerHTML = html;
+  }
+
+  function offsetBps(price, mid) { return (price - mid) / mid * 10000; }
+
+  function ladder(res, mid) {
+    var byVenue = {};
+    res.quotes.forEach(function (q) { (byVenue[q.venue] = byVenue[q.venue] || {})[q.side] = q; });
+    var names = Object.keys(byVenue);
+    var maxAbs = 0;
+    res.quotes.forEach(function (q) { maxAbs = Math.max(maxAbs, Math.abs(offsetBps(q.price, mid))); });
+    var steps = [2, 5, 10, 20, 50, 100, 200, 500, 1000];
+    var scale = steps.find(function (s) { return s >= maxAbs * 1.15; }) || Math.ceil(maxAbs);
+    var pos = function (p) { return 50 + (offsetBps(p, mid) / scale) * 50; };
+
+    var rows = names.map(function (n) {
+      var v = byVenue[n], s = v.sell, b = v.buy, parts = "";
+      if (s && b) {
+        var a = Math.min(pos(s.price), pos(b.price)), z = Math.max(pos(s.price), pos(b.price));
+        parts += '<span class="span" style="left:' + a + "%;width:" + (z - a) + '%"></span>';
+      }
+      if (s) parts += '<span class="dot sell" style="left:' + pos(s.price) + '%" title="Sell at ' + fmt.price(s.price) + '"></span>';
+      if (b) parts += '<span class="dot buy" style="left:' + pos(b.price) + '%" title="Buy at ' + fmt.price(b.price) + '"></span>';
+      var label = venueLabel(n) + ": " + (s ? "sell " + fmt.price(s.price) : "") + (s && b ? ", " : "") + (b ? "buy " + fmt.price(b.price) : "");
+      return '<div class="lrow" role="img" aria-label="' + esc(label) + '"><span class="name">' + esc(venueLabel(n)) +
+        '</span><div class="track"><span class="midline"></span>' + parts + "</div></div>";
+    }).join("");
+
+    return '<div class="ladder"><h2>Where each venue fills</h2>' +
+      '<p class="sub">Distance from the reference rate in basis points. A tighter pair of marks means a cheaper round trip.</p>' +
+      rows +
+      '<div class="axis"><span></span><div class="ticks"><span>−' + scale + '</span><span>−' + scale / 2 +
+      '</span><span>0</span><span>+' + scale / 2 + '</span><span>+' + scale + '</span></div></div>' +
+      '<div class="legend"><span><i class="sell"></i>Sell price</span><span><i class="buy"></i>Buy price</span><span><i class="mid"></i>Reference rate</span></div></div>';
+  }
+
+  function table(res, mid, pairCfg) {
+    var best = res.best || {};
+    var rows = res.quotes.slice().sort(function (a, b) {
+      if (a.side !== b.side) return a.side === "sell" ? -1 : 1;
+      return a.side === "sell" ? b.price - a.price : a.price - b.price;
+    }).map(function (q) {
+      var top = best[q.side];
+      var isBest = top && top.venue === q.venue;
+      var vsBest = top ? (q.side === "sell" ? top.price - q.price : q.price - top.price) / (mid || q.price) * 10000 : null;
+      var gives = q.side === "sell" ? fmt.amt(q.base_amount) + " " + pairCfg.base : fmt.amt(q.quote_amount) + " " + pairCfg.quote;
+      var gets = q.side === "sell" ? fmt.amt(q.quote_amount) + " " + pairCfg.quote : fmt.amt(q.base_amount) + " " + pairCfg.base;
+      var route = q.meta && (q.meta.sources && q.meta.sources.length ? q.meta.sources.join(", ") : q.meta.pool) || "";
+      return '<tr class="' + (isBest ? "is-best" : "") + '">' +
+        '<td' + (route ? ' title="Route: ' + esc(route) + '"' : "") + ">" + esc(venueLabel(q.venue)) + (isBest ? '<span class="tag">Best</span>' : "") + "</td>" +
+        '<td class="l"><span class="side-' + q.side + '">' + (q.side === "buy" ? "Buy" : "Sell") + "</span></td>" +
+        '<td class="price">' + fmt.price(q.price) + "</td>" +
+        "<td>" + fmt.bps(q.deviation_bps) + "</td>" +
+        "<td>" + (vsBest == null ? "–" : (vsBest < 0.005 ? "0.00" : "+" + vsBest.toFixed(2))) + "</td>" +
+        '<td title="for ' + esc(gives) + '">' + esc(gets) + "</td></tr>";
+    }).join("");
+    return '<div class="table-wrap"><h2>All quotes</h2><table><thead><tr>' +
+      '<th>Venue</th><th class="l">Side</th><th>Price</th><th title="Basis points vs the reference rate">vs ref (bps)</th><th title="Basis points behind the best venue">vs best (bps)</th>' +
+      '<th>You get</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+  }
+
+  // ---- wire up --------------------------------------------------------------
+
+  $("pair").addEventListener("change", fillChains);
+  $("source_chain").addEventListener("change", function () { fillVenues(); checkChains(); });
+  $("destination_chain").addEventListener("change", checkChains);
+  document.querySelectorAll(".presets button").forEach(function (b) {
+    b.addEventListener("click", function () { $("notional").value = b.dataset.size; $("notional").focus(); });
+  });
+  $("ticket").addEventListener("submit", submit);
+  init();
+})();
+</script>
+</body>
+</html>

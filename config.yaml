@@ -1,0 +1,44 @@
+# FX tracker registry: which chains, tokens and pairs exist, plus limits.
+#
+# The web API and the front end's dropdowns are built from this file, and the
+# scheduled run quotes every pair listed here. Edit it to add tokens, pairs or
+# chains, then push; no code changes are needed for a new token or pair on a
+# chain that's already listed. A new chain also needs venue contract addresses
+# in the venue modules (src/execution_cost_tracker/venues/*.py).
+#
+# Verify every address against the issuer's official docs before adding it.
+
+chains:
+  base:
+    name: Base
+    chain_id: 8453
+    tokens:
+      USDC:
+        # https://developers.circle.com/stablecoins/usdc-contract-addresses
+        address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        decimals: 6
+      EURC:
+        # https://developers.circle.com/stablecoins/eurc-contract-addresses
+        address: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"
+        decimals: 6
+
+pairs:
+  - base: EURC          # the token being priced
+    quote: USDC         # the token it's priced in
+    reference: EUR/USD  # traditional FX pair it tracks
+    chains: [base]
+    # Optional per-venue settings, e.g.
+    # venue_params:
+    #   uniswap_v3: {fee_tiers: [100, 500]}
+
+limits:
+  min_notional: 1             # smallest size a user can request (base-token units)
+  max_notional: 1000000       # largest; the MAX_NOTIONAL env var overrides this
+
+guardrails:
+  per_client_per_minute: 10   # quote requests one visitor can make per minute
+  global_per_minute: 60       # quote requests across all visitors per minute
+  cache_seconds: 15           # identical requests within this window reuse the answer
+
+cron:
+  sizes: [1000, 10000, 100000]  # sizes the scheduled run quotes, per pair and side
