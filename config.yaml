@@ -40,5 +40,11 @@ guardrails:
   global_per_minute: 60       # quote requests across all visitors per minute
   cache_seconds: 15           # identical requests within this window reuse the answer
 
+quality:
+  # Quotes priced more than this percent above or below the reference rate are
+  # left out of the quote page's results (and its "best" picks). Checked fresh
+  # on every request, so a venue that comes back inside the band reappears.
+  max_distance_from_mid_pct: 2
+
 cron:
   sizes: [1000, 10000, 100000]  # sizes the scheduled run quotes, per pair and side

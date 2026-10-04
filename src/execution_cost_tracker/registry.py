@@ -44,6 +44,7 @@ class Registry:
     global_per_minute: int = 60
     cache_seconds: float = 15.0
     cron_sizes: tuple[float, ...] = (1_000.0, 10_000.0, 100_000.0)
+    max_distance_from_mid_pct: float = 2.0
 
     def pair(self, name: str, chain: str) -> Pair | None:
         """The pair called ``name`` (e.g. "EURC/USDC") on ``chain``, if listed."""
@@ -154,6 +155,7 @@ def parse(raw: object, source: str = "config") -> Registry:
     limits = raw.get("limits") or {}
     guard = raw.get("guardrails") or {}
     cron = raw.get("cron") or {}
+    quality = raw.get("quality") or {}
     try:
         reg = Registry(
             chains=chains,
@@ -164,15 +166,18 @@ def parse(raw: object, source: str = "config") -> Registry:
             global_per_minute=int(guard.get("global_per_minute", 60)),
             cache_seconds=float(guard.get("cache_seconds", 15)),
             cron_sizes=tuple(float(s) for s in cron.get("sizes", [1_000, 10_000, 100_000])),
+            max_distance_from_mid_pct=float(quality.get("max_distance_from_mid_pct", 2)),
         )
     except (TypeError, ValueError) as e:
-        raise fail(f"limits/guardrails/cron values must be numbers: {e}") from None
+        raise fail(f"limits/guardrails/cron/quality values must be numbers: {e}") from None
     if not 0 < reg.min_notional <= reg.max_notional:
         raise fail("limits need 0 < min_notional <= max_notional")
     if reg.per_client_per_minute < 1 or reg.global_per_minute < 1 or reg.cache_seconds < 0:
         raise fail("guardrails must be positive (cache_seconds may be 0 to disable)")
     if not reg.cron_sizes or any(s <= 0 for s in reg.cron_sizes):
         raise fail("cron.sizes must be a non-empty list of positive numbers")
+    if not 0 < reg.max_distance_from_mid_pct <= 100:
+        raise fail("quality.max_distance_from_mid_pct must be above 0 and at most 100")
     return reg
 
 

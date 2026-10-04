@@ -178,6 +178,7 @@ def config_view(reg: Registry | None = None) -> dict:
         "venues": [{"name": n, "label": VENUE_LABELS.get(n, n)} for n in VENUES],
         "sides": list(SIDE_CHOICES),
         "limits": {"min_notional": reg.min_notional, "max_notional": max_notional(reg)},
+        "quality": {"max_distance_from_mid_pct": reg.max_distance_from_mid_pct},
         "guardrails": {
             "per_client_per_minute": reg.per_client_per_minute,
             "cache_seconds": reg.cache_seconds,
@@ -211,7 +212,13 @@ def quote(
     reference: ReferenceSource | None = None,
     venue_factory: VenueFactory = build_venues,
 ) -> dict:
-    """Quote one pair at one notional across the chosen venues. Not stored."""
+    """Quote one pair at one notional across the chosen venues. Not stored.
+
+    Quotes priced more than ``quality.max_distance_from_mid_pct`` from the
+    reference rate are moved to ``excluded`` and left out of ``quotes``,
+    ``rows`` and ``best``. Nothing is remembered between requests, so a venue
+    that comes back inside the band is included again next time.
+    """
     result = run_cycle(
         [params.pair_obj],
         venue_factory(params.venues),
@@ -219,10 +226,26 @@ def quote(
         [params.notional],
         sides=params.sides,
     )
+    band = params.registry.max_distance_from_mid_pct
+    excluded = drop_outside_band(result, band)
     out = result_to_dict(result)
     out["request"] = params.as_dict()
     out["best"] = best_by_side(result)
+    out["band_pct"] = band
+    out["excluded"] = [
+        {**_quote_dict(r), "offset_pct": metrics.offset_pct(r.quote.price, r.ref_mid)} for r in excluded
+    ]
     return out
+
+
+def drop_outside_band(result: CycleResult, max_pct: float) -> list:
+    """Remove rows priced more than ``max_pct`` percent from their reference
+    mid from ``result.rows`` (in place) and return the removed rows."""
+    kept, dropped = [], []
+    for r in result.rows:
+        (kept if metrics.within_band(r.quote.price, r.ref_mid, max_pct) else dropped).append(r)
+    result.rows = kept
+    return dropped
 
 
 def best_by_side(result: CycleResult) -> dict:
@@ -370,28 +393,29 @@ def result_to_dict(result: CycleResult) -> dict:
             for name, r in result.references.items()
         },
         "rows": result.spreads(),
-        "quotes": [
-            {
-                "venue": r.quote.venue,
-                "pair": r.quote.pair,
-                "chain": r.quote.chain,
-                "side": r.quote.side.value,
-                "size": r.size,
-                "base_amount": r.quote.base_amount,
-                "quote_amount": r.quote.quote_amount,
-                "price": r.quote.price,
-                "deviation_bps": r.deviation_bps,
-                "gas_estimate": r.quote.gas_estimate,
-                "meta": r.quote.meta,
-                "timestamp": _iso(r.quote.timestamp),
-            }
-            for r in result.rows
-        ],
+        "quotes": [_quote_dict(r) for r in result.rows],
         "failures": [
             {"venue": f.venue, "pair": f.pair, "side": f.side, "size": f.size, "error": f.error, "timestamp": _iso(f.ts)}
             for f in result.failures
         ],
         "errors": summarize_failures(result),
+    }
+
+
+def _quote_dict(r) -> dict:
+    return {
+        "venue": r.quote.venue,
+        "pair": r.quote.pair,
+        "chain": r.quote.chain,
+        "side": r.quote.side.value,
+        "size": r.size,
+        "base_amount": r.quote.base_amount,
+        "quote_amount": r.quote.quote_amount,
+        "price": r.quote.price,
+        "deviation_bps": r.deviation_bps,
+        "gas_estimate": r.quote.gas_estimate,
+        "meta": r.quote.meta,
+        "timestamp": _iso(r.quote.timestamp),
     }
 
 

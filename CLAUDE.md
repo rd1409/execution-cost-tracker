@@ -14,7 +14,7 @@ Execution Cost Tracker is a Python package with two parts:
 ```
 app.py               # Vercel entrypoint: puts src/ on the path, exposes `app`
 vercel.json          # function maxDuration, excluded files, daily cron -> /api/cron
-config.yaml          # registry: chains, tokens, pairs, limits, guardrails, cron sizes
+config.yaml          # registry: chains, tokens, pairs, limits, guardrails, quote band, cron sizes
 public/index.html    # front-end page (single file, inline CSS/JS), served at /
 src/execution_cost_tracker/
     api.py           # FastAPI routes only: /, /api/health, /api/config, /api/pairs, /api/quote, /api/cron
@@ -74,6 +74,7 @@ Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL
 - **Registry:** chains, tokens, pairs and limits live in `config.yaml`, never hard-coded. Code gets them from `registry.get()`. Adding a token or pair is a config change. Adding a chain also needs venue contract addresses in the venue modules. Any new field gets validation in `registry.parse()` and a test in `test_registry.py`.
 - **Front end:** `public/index.html` is one self-contained file that builds its form from `/api/config` and never holds keys. It calls only this app's `/api/...` endpoints. Keep it working with `side` = buy, sell or both, and with any number of venues.
 - **Guardrails:** every public quote goes through `service.guarded_quote`, which checks the cache, then the per-client limit, then the global limit. Network calls happen outside the lock. Only results with at least one quote are cached.
+- **Quote band:** `service.quote` drops quotes priced more than `quality.max_distance_from_mid_pct` (config.yaml, default 2%) from the reference rate. They go into `excluded` and are left out of `quotes`, `rows` and `best`. The check is stateless and runs on every request, so a venue comes back as soon as it's inside the band. Never persist exclusions. The scheduled run stores every quote unfiltered, so history keeps the outliers.
 - **Cross-chain:** `QuoteParams` accepts `source_chain`/`destination_chain` but rejects different values until bridge routes exist.
 - **API layering:** keep `api.py` to HTTP mapping only. Validation and logic go in `service.py`, which must not import FastAPI so it stays testable offline.
 - The `/api/cron` endpoint must stay closed unless `CRON_SECRET` is set and matches. Public inputs are validated against known pairs and venues and capped by `MAX_NOTIONAL`.

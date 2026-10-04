@@ -297,3 +297,82 @@ def test_storage_uses_turso_when_configured(monkeypatch, tmp_path):
     assert calls == {"url": "libsql://db.example", "token": "tok"}
     assert storage.load_quotes(conn) == []
     conn.close()
+
+
+# --- quotes outside the band around the reference rate -------------------------
+
+
+def test_quotes_far_from_reference_are_hidden_then_return():
+    """A venue more than 2% from the reference is hidden; once its price is
+    back inside the band, the next request includes it again."""
+    healthy = FakeVenue("zerox", 1.084, 1.086)
+    thin = FakeVenue("aerodrome", 1.05, 1.086)  # sells 3.2% below 1.085; buys are fine
+    params = service.QuoteParams(notional=50_000, venues=["zerox", "aerodrome"])
+    out = service.quote(params, reference=REF, venue_factory=lambda names: [healthy, thin])
+
+    assert out["band_pct"] == 2.0
+    shown = {(q["venue"], q["side"]) for q in out["quotes"]}
+    assert ("aerodrome", "sell") not in shown and ("aerodrome", "buy") in shown and len(shown) == 3
+    assert [(e["venue"], e["side"]) for e in out["excluded"]] == [("aerodrome", "sell")]
+    assert out["excluded"][0]["offset_pct"] == pytest.approx((1.05 - 1.085) / 1.085 * 100)
+    assert all(r["venue"] != "aerodrome" or r["bid"] is None for r in out["rows"])
+    json.dumps(out)
+
+    # Liquidity improves: the same venue now prices within the band and is shown.
+    thin.bid = 1.0835
+    out = service.quote(params, reference=REF, venue_factory=lambda names: [healthy, thin])
+    assert out["excluded"] == [] and len(out["quotes"]) == 4
+    assert ("aerodrome", "sell") in {(q["venue"], q["side"]) for q in out["quotes"]}
+
+
+def test_hidden_quote_is_never_best():
+    # A broken pool "buying" far below the reference would otherwise look like the best buy.
+    broken = FakeVenue("uniswap_v4", 1.084, 1.00)
+    fair = FakeVenue("zerox", 1.084, 1.086)
+    out = service.quote(
+        service.QuoteParams(notional=1000, side="buy", venues=["uniswap_v4", "zerox"]),
+        reference=REF,
+        venue_factory=lambda names: [broken, fair],
+    )
+    assert out["best"]["buy"]["venue"] == "zerox"
+    assert [e["venue"] for e in out["excluded"]] == ["uniswap_v4"]
+
+
+def test_all_quotes_hidden_are_not_cached():
+    from execution_cost_tracker.guardrails import TTLCache
+
+    far = FakeVenue("zerox", 1.0, 1.2)
+    params = service.QuoteParams(notional=1000, venues=["zerox"])
+    guard = service.Guard.from_registry(params.registry)
+    kw = {"reference": REF, "venue_factory": lambda names: [far]}
+    out = service.guarded_quote(params, "a", guard=guard, **kw)
+    assert out["quotes"] == [] and len(out["excluded"]) == 2 and out["best"] == {}
+    assert isinstance(guard.cache, TTLCache) and guard.cache.get(params.cache_key()) is None
+
+
+def test_band_setting_comes_from_config():
+    from execution_cost_tracker import registry
+
+    wide = registry.parse({**_reg_raw(), "quality": {"max_distance_from_mid_pct": 5}})
+    out = service.quote(
+        service.QuoteParams(notional=1000, venues=["zerox"], registry=wide),
+        reference=REF,
+        venue_factory=lambda names: [FakeVenue("zerox", 1.05, 1.086)],
+    )
+    assert out["band_pct"] == 5 and out["excluded"] == [] and len(out["quotes"]) == 2
+    assert service.config_view(wide)["quality"] == {"max_distance_from_mid_pct": 5.0}
+
+
+def _reg_raw():
+    return {
+        "chains": {
+            "base": {
+                "chain_id": 8453,
+                "tokens": {
+                    "USDC": {"address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "decimals": 6},
+                    "EURC": {"address": "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42", "decimals": 6},
+                },
+            }
+        },
+        "pairs": [{"base": "EURC", "quote": "USDC", "reference": "EUR/USD", "chains": ["base"]}],
+    }

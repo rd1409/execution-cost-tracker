@@ -178,7 +178,10 @@ tr.is-best td { background: var(--best-bg); }
 .side-buy { color: var(--buy); font-weight: 600; }
 .side-sell { color: var(--sell); font-weight: 600; }
 
-.fails { margin-top: 18px; font-size: 0.88rem; }
+.fails, .hidden-q { margin-top: 18px; font-size: 0.88rem; }
+.hidden-q summary { cursor: pointer; font-weight: 500; }
+.hidden-q p { margin: 8px 0 0; color: var(--muted); max-width: 70ch; }
+.hidden-q ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
 .fails summary { cursor: pointer; color: var(--bad); font-weight: 500; }
 .fails ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
 .foot { margin-top: 22px; font-size: 0.82rem; color: var(--muted); max-width: 75ch; }
@@ -406,9 +409,10 @@ tr.is-best td { background: var(--best-bg); }
         throw new Error(d || "Quote request failed (HTTP " + x.r.status + ").");
       }
       render(x.body);
-      var n = x.body.quotes.length;
+      var n = x.body.quotes.length, hidden = (x.body.excluded || []).length;
       status(n ? (x.body.cached ? "Showing a result from " + x.body.cache_age_seconds + "s ago for the same request." : "")
-               : "No venue returned a quote. Details below.", !n);
+               : hidden ? "Every quote was more than " + x.body.band_pct + "% from the reference rate, so none are shown. Details below."
+                        : "No venue returned a quote. Details below.", !n);
     }).catch(function (e) {
       status(e.message || "Couldn't reach the server.", true);
     }).then(function () { $("go").disabled = false; checkChains(); });
@@ -445,6 +449,7 @@ tr.is-best td { background: var(--best-bg); }
 
     if (res.quotes.length && mid) html += ladder(res, mid);
     if (res.quotes.length) html += table(res, mid, pairCfg);
+    if ((res.excluded || []).length) html += hiddenNote(res, pairCfg);
 
     if (res.failures.length) {
       html += '<details class="fails"' + (res.quotes.length ? "" : " open") + "><summary>" +
@@ -455,10 +460,22 @@ tr.is-best td { background: var(--best-bg); }
         }).join("") + "</ul></details>";
     }
 
-    html += '<p class="foot">Costs are measured against the reference rate, which updates once per working day, so a few basis points of drift during the day are expected. Positive means worse than the reference. Gas isn\'t included. ' +
+    html += '<p class="foot">Costs are measured against the reference rate, which updates once per working day, so a few basis points of drift during the day are expected. Positive means worse than the reference. Gas isn\'t included. Quotes more than ' + res.band_pct + '% from the reference rate are hidden. ' +
       (res.cached ? "This result was cached; identical requests within a few seconds reuse it." : "") + "</p>";
 
     $("out").innerHTML = html;
+  }
+
+  function hiddenNote(res, pairCfg) {
+    var ex = res.excluded.slice().sort(function (a, b) { return Math.abs(b.offset_pct) - Math.abs(a.offset_pct); });
+    return '<details class="hidden-q"' + (res.quotes.length ? "" : " open") + "><summary>" + ex.length +
+      " quote" + (ex.length > 1 ? "s" : "") + " hidden: priced more than " + res.band_pct + "% from the reference rate</summary>" +
+      "<p>Usually a pool with too little liquidity for this size. They're checked again on every request and come back once they're within " +
+      res.band_pct + "%.</p><ul>" +
+      ex.map(function (q) {
+        return "<li><b>" + esc(venueLabel(q.venue)) + "</b> (" + (q.side === "buy" ? "buy" : "sell") + ") at " + fmt.price(q.price) +
+          ", " + (q.offset_pct > 0 ? "+" : "") + q.offset_pct.toFixed(2) + "% from reference</li>";
+      }).join("") + "</ul></details>";
   }
 
   function offsetBps(price, mid) { return (price - mid) / mid * 10000; }

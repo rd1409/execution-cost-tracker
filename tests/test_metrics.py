@@ -65,3 +65,13 @@ def test_gas_cost_bps():
 def test_quote_validates_amounts():
     with pytest.raises(ValueError):
         q("sell", 0, 1)
+
+
+def test_offset_pct_and_band():
+    assert metrics.offset_pct(1.1, 1.0) == pytest.approx(10)
+    assert metrics.offset_pct(0.98, 1.0) == pytest.approx(-2)
+    assert metrics.within_band(1.0199, 1.0, 2) and metrics.within_band(0.9801, 1.0, 2)
+    assert metrics.within_band(1.02, 1.0, 2)  # boundary is inside
+    assert not metrics.within_band(1.0201, 1.0, 2) and not metrics.within_band(0.9799, 1.0, 2)
+    with pytest.raises(ValueError):
+        metrics.offset_pct(1, 0)

@@ -103,6 +103,10 @@ uvicorn app:app --reload        # then open http://127.0.0.1:8000 (page) or /doc
 
 `config.yaml` at the repo root lists the chains, tokens (address and decimals) and pairs. It also sets the size limits, guardrails and the sizes the scheduled run quotes. The API only accepts what's listed there, and the front end's dropdowns are built from it. To add a token or pair on Base, edit the file and push; no code changes are needed. The app checks the file on startup and refuses malformed addresses, unknown tokens or chains, and duplicate pairs.
 
+### Hidden quotes: the 2% band
+
+Quotes priced more than 2% above or below the reference rate are left out of the page's table, chart and "best" picks, and listed under a "hidden" note instead. They usually come from pools too thin for the size requested. The check runs fresh on every request, so a venue reappears as soon as its price is back within 2%. The API returns hidden quotes in `excluded`, with `offset_pct` showing how far off they were. Change the threshold with `quality.max_distance_from_mid_pct` in `config.yaml`. The scheduled run still stores every quote, so the history includes outliers.
+
 ### Guardrails on `/api/quote`
 
 Because the page is public, each quote request costs RPC calls and 0x API calls:

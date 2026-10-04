@@ -39,6 +39,8 @@ def test_parse_reads_all_sections():
     assert reg.min_notional == 10 and reg.max_notional == 50000
     assert (reg.per_client_per_minute, reg.global_per_minute, reg.cache_seconds) == (3, 9, 5)
     assert reg.cron_sizes == (100.0, 1000.0)
+    assert reg.max_distance_from_mid_pct == 2.0  # default when the section is missing
+    assert registry.parse({**VALID, "quality": {"max_distance_from_mid_pct": 0.5}}).max_distance_from_mid_pct == 0.5
     assert reg.pair_names() == ["EURC/USDC"] and reg.pair("EURC/USDC", "arbitrum") is None
     assert [p.name for p in reg.pairs_on("base")] == ["EURC/USDC"]
 
@@ -87,6 +89,9 @@ def broken(mutate):
         (lambda r: r["guardrails"].update(per_client_per_minute=0), "guardrails"),
         (lambda r: r["cron"].update(sizes=[]), "cron.sizes"),
         (lambda r: r["limits"].update(max_notional="lots"), "numbers"),
+        (lambda r: r.update(quality={"max_distance_from_mid_pct": 0}), "max_distance_from_mid_pct"),
+        (lambda r: r.update(quality={"max_distance_from_mid_pct": 150}), "max_distance_from_mid_pct"),
+        (lambda r: r.update(quality={"max_distance_from_mid_pct": "two"}), "numbers"),
     ],
 )
 def test_invalid_registry_is_rejected(mutate, match):
