@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "execution-cost-tracker"
-version = "0.4.0"
+version = "0.5.0"
 description = "Measure execution costs: trade slippage and fees, and on-chain FX quotes against reference mids."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,6 +17,7 @@ dependencies = [
     "web3>=6",
     "turso_serverless",
     "pyyaml>=6",
+    "tzdata",  # time-zone rules for zoneinfo (market_hours.py) on hosts without a system tz database
 ]
 
 [project.optional-dependencies]

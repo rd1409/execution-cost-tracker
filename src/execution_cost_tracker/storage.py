@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +52,15 @@ CREATE TABLE IF NOT EXISTS failures (
     size    REAL NOT NULL,
     error   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS market_mids (
+    received_at TEXT NOT NULL,
+    pair        TEXT NOT NULL,
+    mid         REAL NOT NULL,
+    source      TEXT NOT NULL,
+    ticker      TEXT,
+    bar_time    TEXT
+);
+CREATE INDEX IF NOT EXISTS market_mids_pair_ts ON market_mids (pair, received_at);
 CREATE INDEX IF NOT EXISTS quotes_pair_ts ON quotes (pair, ts);
 CREATE INDEX IF NOT EXISTS quotes_venue_ts ON quotes (venue, ts);
 """
@@ -182,3 +191,44 @@ def load_table(conn: Connection, table: str, run_id: str | None = None) -> list[
     if run_id is None:
         return _dicts(_execute(conn, f"SELECT * FROM {table} ORDER BY ts"))
     return _dicts(_execute(conn, f"SELECT * FROM {table} WHERE run_id = ? ORDER BY ts", (run_id,)))
+
+
+# --- live market mid (TradingView webhook) -------------------------------------
+
+MARKET_MID_RETENTION_DAYS = 30
+
+
+def save_market_mid(
+    conn: Connection,
+    pair: str,
+    mid: float,
+    source: str,
+    received_at: datetime,
+    ticker: str | None = None,
+    bar_time: str | None = None,
+) -> None:
+    """Store one market-mid update and drop rows older than the retention window."""
+    _execute(
+        conn,
+        "INSERT INTO market_mids VALUES (?, ?, ?, ?, ?, ?)",
+        (received_at.isoformat(), pair, mid, source, ticker, bar_time),
+    )
+    cutoff = received_at - timedelta(days=MARKET_MID_RETENTION_DAYS)
+    _execute(conn, "DELETE FROM market_mids WHERE received_at < ?", (cutoff.isoformat(),))
+    conn.commit()
+
+
+def latest_market_mid(conn: Connection, pair: str) -> dict | None:
+    """The most recent market mid for ``pair`` (e.g. "EUR/USD"), or None."""
+    rows = _dicts(
+        _execute(
+            conn,
+            "SELECT * FROM market_mids WHERE pair = ? ORDER BY received_at DESC LIMIT 1",
+            (pair,),
+        )
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    row["received_at"] = datetime.fromisoformat(row["received_at"])
+    return row

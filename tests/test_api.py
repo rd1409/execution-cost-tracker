@@ -77,3 +77,23 @@ def test_cron_requires_secret(client, monkeypatch):
     assert client.get("/api/cron", headers={"Authorization": "Bearer nope"}).status_code == 401
     ok = client.get("/api/cron", headers={"Authorization": "Bearer s3cret-value-123456"})
     assert ok.status_code == 200 and ok.json() == {"run_id": "x"}
+
+
+def test_tradingview_webhook_route(client, monkeypatch):
+    seen = {}
+
+    def fake(body, ip, secret):
+        seen.update(body=body, ip=ip, secret=secret)
+        return {"ok": True}
+
+    monkeypatch.setenv("TRADINGVIEW_WEBHOOK_SECRET", "s")
+    monkeypatch.setattr(service, "handle_tradingview_webhook", fake)
+    r = client.post("/api/tradingview/webhook", content=b'{"price": 1.1}', headers={"X-Real-IP": "52.89.214.238"})
+    assert r.status_code == 200 and seen == {"body": b'{"price": 1.1}', "ip": "52.89.214.238", "secret": "s"}
+
+    def reject(body, ip, secret):
+        raise service.WebhookError(403, "nope")
+
+    monkeypatch.setattr(service, "handle_tradingview_webhook", reject)
+    r = client.post("/api/tradingview/webhook", content=b"{}")
+    assert r.status_code == 403 and r.json() == {"detail": "nope"}

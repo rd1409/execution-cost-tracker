@@ -21,6 +21,10 @@ from .models import Pair, Token
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _REFERENCE = re.compile(r"^[A-Z]{3}/[A-Z]{3}$")
 
+# TradingView's published webhook sender addresses, used when config.yaml
+# doesn't list them: https://www.tradingview.com/support/solutions/43000529348
+DEFAULT_TRADINGVIEW_IPS = ("52.89.214.238", "34.212.75.30", "54.218.53.128", "52.32.178.7")
+
 
 class RegistryError(ValueError):
     """config.yaml is missing or invalid."""
@@ -45,6 +49,16 @@ class Registry:
     cache_seconds: float = 15.0
     cron_sizes: tuple[float, ...] = (1_000.0, 10_000.0, 100_000.0)
     max_distance_from_mid_pct: float = 2.0
+    market_mid_max_age_seconds: float = 180.0
+    market_mid_symbols: dict = field(default_factory=lambda: {"EURUSD": "EUR/USD"}, hash=False, compare=False)
+    tradingview_ips: tuple[str, ...] = DEFAULT_TRADINGVIEW_IPS
+    enforce_ip_allowlist: bool = True
+
+    def reference_for_symbol(self, ticker: str) -> str | None:
+        """The reference pair (e.g. "EUR/USD") a TradingView ticker prices, if
+        configured. Matches "EURUSD", "FX:EURUSD" and "eurusd" alike."""
+        key = str(ticker).split(":")[-1].replace("/", "").upper()
+        return self.market_mid_symbols.get(key)
 
     def pair(self, name: str, chain: str) -> Pair | None:
         """The pair called ``name`` (e.g. "EURC/USDC") on ``chain``, if listed."""
@@ -156,6 +170,23 @@ def parse(raw: object, source: str = "config") -> Registry:
     guard = raw.get("guardrails") or {}
     cron = raw.get("cron") or {}
     quality = raw.get("quality") or {}
+    mm = raw.get("market_mid") or {}
+    symbols = mm.get("symbols", {"EURUSD": "EUR/USD"}) or {}
+    if not isinstance(symbols, dict):
+        raise fail("market_mid.symbols must map TradingView tickers to pairs like 'EUR/USD'")
+    norm_symbols = {}
+    for ticker, ref in symbols.items():
+        if not _REFERENCE.match(str(ref)):
+            raise fail(f"market_mid.symbols.{ticker} must be a pair like 'EUR/USD', got {ref!r}")
+        norm_symbols[str(ticker).replace("/", "").upper()] = str(ref)
+    ips = mm.get("tradingview_ips", list(DEFAULT_TRADINGVIEW_IPS)) or []
+    if not isinstance(ips, list) or not all(isinstance(ip, str) and ip.count(".") == 3 for ip in ips):
+        raise fail("market_mid.tradingview_ips must be a list of IPv4 addresses")
+    enforce = mm.get("enforce_ip_allowlist", True)
+    if not isinstance(enforce, bool):
+        raise fail("market_mid.enforce_ip_allowlist must be true or false")
+    if enforce and not ips:
+        raise fail("market_mid.enforce_ip_allowlist is true but tradingview_ips is empty")
     try:
         reg = Registry(
             chains=chains,
@@ -167,9 +198,13 @@ def parse(raw: object, source: str = "config") -> Registry:
             cache_seconds=float(guard.get("cache_seconds", 15)),
             cron_sizes=tuple(float(s) for s in cron.get("sizes", [1_000, 10_000, 100_000])),
             max_distance_from_mid_pct=float(quality.get("max_distance_from_mid_pct", 2)),
+            market_mid_max_age_seconds=float(mm.get("max_age_seconds", 180)),
+            market_mid_symbols=norm_symbols,
+            tradingview_ips=tuple(ips),
+            enforce_ip_allowlist=enforce,
         )
     except (TypeError, ValueError) as e:
-        raise fail(f"limits/guardrails/cron/quality values must be numbers: {e}") from None
+        raise fail(f"limits/guardrails/cron/quality/market_mid values must be numbers: {e}") from None
     if not 0 < reg.min_notional <= reg.max_notional:
         raise fail("limits need 0 < min_notional <= max_notional")
     if reg.per_client_per_minute < 1 or reg.global_per_minute < 1 or reg.cache_seconds < 0:
@@ -178,6 +213,8 @@ def parse(raw: object, source: str = "config") -> Registry:
         raise fail("cron.sizes must be a non-empty list of positive numbers")
     if not 0 < reg.max_distance_from_mid_pct <= 100:
         raise fail("quality.max_distance_from_mid_pct must be above 0 and at most 100")
+    if reg.market_mid_max_age_seconds <= 0:
+        raise fail("market_mid.max_age_seconds must be positive")
     return reg
 
 

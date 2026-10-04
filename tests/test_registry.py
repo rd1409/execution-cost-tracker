@@ -97,3 +97,30 @@ def broken(mutate):
 def test_invalid_registry_is_rejected(mutate, match):
     with pytest.raises(RegistryError, match=match):
         registry.parse(broken(mutate))
+
+
+def test_market_mid_settings():
+    reg = registry.parse(VALID)
+    assert reg.market_mid_symbols == {"EURUSD": "EUR/USD"} and reg.enforce_ip_allowlist
+    assert reg.tradingview_ips == registry.DEFAULT_TRADINGVIEW_IPS and reg.market_mid_max_age_seconds == 180
+    assert reg.reference_for_symbol("FX:EURUSD") == "EUR/USD" and reg.reference_for_symbol("eur/usd") == "EUR/USD"
+    assert reg.reference_for_symbol("GBPUSD") is None
+    custom = registry.parse({**VALID, "market_mid": {"symbols": {"eurusd": "EUR/USD", "GBPUSD": "GBP/USD"},
+                                                    "max_age_seconds": 60, "enforce_ip_allowlist": False}})
+    assert custom.reference_for_symbol("GBPUSD") == "GBP/USD" and custom.market_mid_max_age_seconds == 60
+
+
+@pytest.mark.parametrize(
+    "mm,match",
+    [
+        ({"symbols": {"EURUSD": "eurusd"}}, "EUR/USD"),
+        ({"symbols": ["EURUSD"]}, "symbols"),
+        ({"tradingview_ips": "1.2.3.4"}, "IPv4"),
+        ({"tradingview_ips": []}, "empty"),
+        ({"enforce_ip_allowlist": "yes"}, "true or false"),
+        ({"max_age_seconds": 0}, "max_age_seconds"),
+    ],
+)
+def test_invalid_market_mid_settings(mm, match):
+    with pytest.raises(RegistryError, match=match):
+        registry.parse({**VALID, "market_mid": mm})

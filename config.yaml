@@ -46,5 +46,17 @@ quality:
   # on every request, so a venue that comes back inside the band reappears.
   max_distance_from_mid_pct: 2
 
+market_mid:
+  # Live market mid pushed by a TradingView webhook alert (setup in README).
+  # The quote page compares venues with it during FX hours (Monday 05:00
+  # Sydney to Friday 17:00 New York) and shows N/A otherwise.
+  max_age_seconds: 180          # older prices count as stale and show N/A
+  symbols:                      # TradingView ticker -> reference pair it prices
+    EURUSD: EUR/USD
+  # TradingView's published webhook sender addresses:
+  # https://www.tradingview.com/support/solutions/43000529348-how-to-configure-webhook-alerts/
+  tradingview_ips: [52.89.214.238, 34.212.75.30, 54.218.53.128, 52.32.178.7]
+  enforce_ip_allowlist: true    # reject webhook calls from any other address
+
 cron:
   sizes: [1000, 10000, 100000]  # sizes the scheduled run quotes, per pair and side

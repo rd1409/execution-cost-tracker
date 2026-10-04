@@ -8,6 +8,9 @@ Endpoints:
     POST /api/quote    on-demand quote (not stored); rate limited and cached
     GET  /api/cron     scheduled run: quote everything and store it
                        (requires ``Authorization: Bearer <CRON_SECRET>``)
+    POST /api/tradingview/webhook
+                       TradingView alert pushes the live market mid
+                       (secret in the JSON body; TradingView IPs only)
 
 FastAPI also serves interactive docs at /docs for trying requests by hand.
 All logic lives in ``service.py``; this module only maps HTTP to it.
@@ -85,6 +88,16 @@ def quote(req: QuoteRequest, request: Request):
             content={"detail": str(e), "retry_after": e.retry_after},
             headers={"Retry-After": str(e.retry_after)},
         )
+
+
+@app.post("/api/tradingview/webhook", include_in_schema=False)
+async def tradingview_webhook(request: Request):
+    body = await request.body()
+    client = guardrails.client_key(dict(request.headers), request.client.host if request.client else None)
+    try:
+        return service.handle_tradingview_webhook(body, client, os.environ.get("TRADINGVIEW_WEBHOOK_SECRET"))
+    except service.WebhookError as e:
+        return JSONResponse(status_code=e.status, content={"detail": str(e)})
 
 
 @app.get("/api/cron")

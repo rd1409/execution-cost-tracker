@@ -8,14 +8,15 @@ registry in config.yaml; see ``registry.py``.
 from __future__ import annotations
 
 import hmac
+import json
 import math
 import os
 import threading
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Iterable, Sequence
 
-from . import metrics, registry, storage
+from . import market_hours, metrics, registry, storage
 from .guardrails import RateLimited, SlidingWindowLimiter, TTLCache
 from .models import Pair, Side
 from .reference import FrankfurterReference, ReferenceSource
@@ -33,7 +34,19 @@ VENUE_LABELS = {
 }
 SIDE_CHOICES = ("both", "buy", "sell")
 
-__all__ = ["QuoteParams", "RateLimited", "config_view", "cron_cycle", "guarded_quote", "quote"]
+__all__ = [
+    "QuoteParams",
+    "RateLimited",
+    "WebhookError",
+    "config_view",
+    "cron_cycle",
+    "guarded_quote",
+    "handle_tradingview_webhook",
+    "market_mid_status",
+    "quote",
+]
+
+MidLookup = Callable[[str], "dict | None"]
 
 
 def max_notional(reg: Registry | None = None) -> float:
@@ -179,6 +192,8 @@ def config_view(reg: Registry | None = None) -> dict:
         "sides": list(SIDE_CHOICES),
         "limits": {"min_notional": reg.min_notional, "max_notional": max_notional(reg)},
         "quality": {"max_distance_from_mid_pct": reg.max_distance_from_mid_pct},
+        "market_hours": market_hours.status(datetime.now(timezone.utc)),
+        "market_mid": {"max_age_seconds": reg.market_mid_max_age_seconds, "source": "tradingview"},
         "guardrails": {
             "per_client_per_minute": reg.per_client_per_minute,
             "cache_seconds": reg.cache_seconds,
@@ -211,6 +226,8 @@ def quote(
     params: QuoteParams,
     reference: ReferenceSource | None = None,
     venue_factory: VenueFactory = build_venues,
+    mid_lookup: MidLookup | None = None,
+    now: datetime | None = None,
 ) -> dict:
     """Quote one pair at one notional across the chosen venues. Not stored.
 
@@ -235,7 +252,150 @@ def quote(
     out["excluded"] = [
         {**_quote_dict(r), "offset_pct": metrics.offset_pct(r.quote.price, r.ref_mid)} for r in excluded
     ]
+
+    # Compare with the live market mid during FX hours; None (N/A) otherwise.
+    mm = market_mid_status(params.pair_obj.reference, now or datetime.now(timezone.utc), mid_lookup, params.registry)
+    out["market_mid"] = mm
+    for q in out["quotes"] + list(out["best"].values()):
+        q["vs_market_mid_bps"] = (
+            metrics.deviation_bps(q["price"], mm["mid"], q["side"]) if mm["available"] else None
+        )
     return out
+
+
+# --- live market mid -------------------------------------------------------------
+
+
+def stored_mid_lookup(pair: str) -> dict | None:
+    """Latest market mid for ``pair`` from the database."""
+    conn = storage.connect()
+    try:
+        return storage.latest_market_mid(conn, pair)
+    finally:
+        conn.close()
+
+
+def market_mid_status(
+    reference_pair: str,
+    now: datetime,
+    lookup: MidLookup | None = None,
+    reg: Registry | None = None,
+) -> dict:
+    """Whether a market mid can be used right now, and why not if it can't.
+
+    Available only when the FX market is open (Monday 05:00 Sydney to Friday
+    17:00 New York) and the last TradingView price is fresher than
+    ``market_mid.max_age_seconds``. ``reason`` explains any N/A.
+    """
+    reg = reg or registry.get()
+    hours = market_hours.status(now)
+    out = {
+        "pair": reference_pair,
+        "available": False,
+        "mid": None,
+        "as_of": None,
+        "age_seconds": None,
+        "source": None,
+        "reason": None,
+        "market_open": hours["open"],
+        "next_change": hours["next_change"],
+        "hours": hours["hours"],
+    }
+    if not hours["open"]:
+        out["reason"] = "FX market closed"
+        return out
+    try:
+        row = (lookup or stored_mid_lookup)(reference_pair)
+    except Exception as e:  # database down or not configured
+        out["reason"] = f"market mid unavailable ({type(e).__name__})"
+        return out
+    if not row:
+        out["reason"] = "no market mid received from TradingView yet"
+        return out
+    age = (now - row["received_at"]).total_seconds()
+    out.update(mid=row["mid"], as_of=row["received_at"].isoformat(), age_seconds=round(age, 1), source=row["source"])
+    if age > reg.market_mid_max_age_seconds:
+        mins = int(age // 60)
+        out["reason"] = f"last TradingView price is {mins} min old" if mins else f"last TradingView price is {int(age)}s old"
+        return out
+    out["available"] = True
+    return out
+
+
+class WebhookError(Exception):
+    """A rejected webhook call; ``status`` is the HTTP status to return."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def handle_tradingview_webhook(
+    body: bytes | str,
+    client_ip: str | None,
+    secret: str | None,
+    connect: Callable[[], object] = storage.connect,
+    now: datetime | None = None,
+    reg: Registry | None = None,
+) -> dict:
+    """Store a market mid sent by a TradingView alert.
+
+    Expected JSON body (set as the alert message in TradingView):
+        {"secret": "...", "ticker": "{{ticker}}", "price": {{close}}, "time": "{{timenow}}"}
+    "bid" and "ask" may be sent instead of "price"; their midpoint is stored.
+    TradingView can't send custom headers, so the shared secret travels in
+    the body; requests are also limited to TradingView's published addresses.
+    """
+    reg = reg or registry.get()
+    if not secret:
+        raise WebhookError(503, "TRADINGVIEW_WEBHOOK_SECRET isn't set on the server")
+    if reg.enforce_ip_allowlist and client_ip not in reg.tradingview_ips:
+        raise WebhookError(403, f"{client_ip} isn't one of TradingView's webhook addresses")
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        raise WebhookError(400, "body must be JSON; see the README for the alert message format") from None
+    if not isinstance(data, dict):
+        raise WebhookError(400, "body must be a JSON object")
+    if not hmac.compare_digest(str(data.get("secret", "")), secret):
+        raise WebhookError(401, "wrong or missing secret")
+
+    ticker = str(data.get("ticker", ""))
+    pair = reg.reference_for_symbol(ticker)
+    if pair is None:
+        raise WebhookError(400, f"ticker {ticker!r} isn't listed under market_mid.symbols in config.yaml")
+
+    def number(key: str) -> float | None:
+        v = data.get(key)
+        if v is None:
+            return None
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            raise WebhookError(400, f"{key} must be a number, got {v!r}") from None
+        if not math.isfinite(x) or x <= 0:
+            raise WebhookError(400, f"{key} must be a positive number")
+        return x
+
+    bid, ask = number("bid"), number("ask")
+    if bid is not None and ask is not None:
+        if ask < bid:
+            raise WebhookError(400, "ask must not be below bid")
+        mid = (bid + ask) / 2
+    else:
+        mid = number("price")
+        if mid is None:
+            mid = number("close")
+        if mid is None:
+            raise WebhookError(400, "send price (or bid and ask)")
+
+    now = now or datetime.now(timezone.utc)
+    conn = connect()
+    try:
+        storage.save_market_mid(conn, pair, mid, "tradingview", now, ticker=ticker, bar_time=data.get("time"))
+    finally:
+        conn.close()
+    return {"ok": True, "pair": pair, "mid": mid, "received_at": now.isoformat()}
 
 
 def drop_outside_band(result: CycleResult, max_pct: float) -> list:
@@ -259,6 +419,7 @@ def best_by_side(result: CycleResult) -> dict:
             continue
         row = next(r for r in rows if r.quote is top)
         best[side.value] = {
+            "side": side.value,
             "venue": top.venue,
             "price": top.price,
             "deviation_bps": row.deviation_bps,

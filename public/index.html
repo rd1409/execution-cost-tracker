@@ -136,6 +136,8 @@ button.go:disabled { opacity: 0.55; cursor: progress; }
 .refline .rate { font-size: clamp(2.2rem, 5vw, 3.4rem); font-stretch: 66%; font-weight: 650; line-height: 1; }
 .refline .what { color: var(--muted); }
 .refline .what b { color: var(--ink); font-weight: 600; }
+.mktline { margin: -8px 0 18px; font-size: 0.88rem; color: var(--muted); max-width: 75ch; }
+td.na { color: var(--muted); }
 
 .best { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .best .pick { border-top: 3px solid var(--rule); padding-top: 8px; }
@@ -427,11 +429,16 @@ tr.is-best td { background: var(--best-bg); }
     var mid = ref ? ref.mid : null;
     var html = "";
 
-    if (ref) {
+    var mm = res.market_mid || {};
+    if (mm.available) {
+      html += '<div class="refline"><span class="rate">' + mm.mid.toFixed(5) + '</span>' +
+        '<span class="what"><b>' + esc(mm.pair) + '</b> market mid from TradingView, ' + ago(mm.age_seconds) + "</span></div>";
+    } else if (ref) {
       html += '<div class="refline"><span class="rate">' + mid.toFixed(4) + '</span>' +
-        '<span class="what"><b>' + esc(ref.pair) + '</b> reference rate' +
-        (ref.as_of ? ", ECB fix of " + esc(ref.as_of) : "") + "</span></div>";
+        '<span class="what"><b>' + esc(ref.pair) + '</b> ECB reference rate' +
+        (ref.as_of ? ", fix of " + esc(ref.as_of) : "") + "</span></div>";
     }
+    html += '<p class="mktline">' + marketLine(mm, ref) + "</p>";
 
     // best per side
     var best = res.best || {};
@@ -443,7 +450,8 @@ tr.is-best td { background: var(--best-bg); }
       return '<div class="pick ' + s + '"><p class="num">Best to ' + s + "</p>" +
         '<p class="who">' + esc(venueLabel(b.venue)) + "</p>" +
         '<p class="num">' + esc(verb) + "</p>" +
-        '<p class="num">' + fmt.bps(b.deviation_bps) + " bps vs reference</p></div>";
+        '<p class="num">' + (b.vs_market_mid_bps == null ? "vs market mid: N/A, " + esc(naReason(mm))
+                                                          : fmt.bps(b.vs_market_mid_bps) + " bps vs market mid") + "</p></div>";
     });
     if (picks.length) html += '<div class="best">' + picks.join("") + "</div>";
 
@@ -460,10 +468,38 @@ tr.is-best td { background: var(--best-bg); }
         }).join("") + "</ul></details>";
     }
 
-    html += '<p class="foot">Costs are measured against the reference rate, which updates once per working day, so a few basis points of drift during the day are expected. Positive means worse than the reference. Gas isn\'t included. Quotes more than ' + res.band_pct + '% from the reference rate are hidden. ' +
+    html += '<p class="foot">"vs mkt mid" compares each price with the live EUR/USD mid from TradingView while the FX market is open (Monday 05:00 Sydney to Friday 17:00 New York); positive means worse than mid. Outside those hours it shows N/A. Quotes more than ' + res.band_pct + '% from the ECB daily reference rate are hidden. Gas isn\'t included. ' +
       (res.cached ? "This result was cached; identical requests within a few seconds reuse it." : "") + "</p>";
 
     $("out").innerHTML = html;
+  }
+
+  function ago(sec) {
+    if (sec == null) return "";
+    sec = Math.max(0, Math.round(sec));
+    return sec < 60 ? sec + "s ago" : Math.round(sec / 60) + " min ago";
+  }
+
+  function whenLocal(iso) {
+    var d = new Date(iso);
+    return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+  }
+
+  function naReason(mm) {
+    if (!mm || mm.market_open === false) return "FX market closed";
+    return mm.reason || "no market mid";
+  }
+
+  function marketLine(mm, ref) {
+    if (!mm || mm.market_open == null) return "";
+    if (mm.available) {
+      return "FX market open until " + esc(whenLocal(mm.next_change)) + " your time." +
+        (ref ? " ECB reference " + ref.mid.toFixed(4) + (ref.as_of ? " (fix of " + esc(ref.as_of) + ")" : "") + "." : "");
+    }
+    if (!mm.market_open) {
+      return "FX market closed. It reopens " + esc(whenLocal(mm.next_change)) + " your time (Monday 05:00 Sydney); until then market-mid comparisons show N/A.";
+    }
+    return "FX market open, but there's no current market mid: " + esc(mm.reason) + ". Market-mid comparisons show N/A.";
   }
 
   function hiddenNote(res, pairCfg) {
@@ -527,12 +563,14 @@ tr.is-best td { background: var(--best-bg); }
         '<td' + (route ? ' title="Route: ' + esc(route) + '"' : "") + ">" + esc(venueLabel(q.venue)) + (isBest ? '<span class="tag">Best</span>' : "") + "</td>" +
         '<td class="l"><span class="side-' + q.side + '">' + (q.side === "buy" ? "Buy" : "Sell") + "</span></td>" +
         '<td class="price">' + fmt.price(q.price) + "</td>" +
-        "<td>" + fmt.bps(q.deviation_bps) + "</td>" +
+        (q.vs_market_mid_bps == null
+          ? '<td class="na" title="' + esc(naReason(res.market_mid)) + '">N/A</td>'
+          : "<td>" + fmt.bps(q.vs_market_mid_bps) + "</td>") +
         "<td>" + (vsBest == null ? "–" : (vsBest < 0.005 ? "0.00" : "+" + vsBest.toFixed(2))) + "</td>" +
         '<td title="for ' + esc(gives) + '">' + esc(gets) + "</td></tr>";
     }).join("");
     return '<div class="table-wrap"><h2>All quotes</h2><table><thead><tr>' +
-      '<th>Venue</th><th class="l">Side</th><th>Price</th><th title="Basis points vs the reference rate">vs ref (bps)</th><th title="Basis points behind the best venue">vs best (bps)</th>' +
+      '<th>Venue</th><th class="l">Side</th><th>Price</th><th title="Basis points vs the live EUR/USD market mid, during FX hours (Monday 05:00 Sydney to Friday 17:00 New York)">vs mkt mid (bps)</th><th title="Basis points behind the best venue">vs best (bps)</th>' +
       '<th>You get</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
   }
 

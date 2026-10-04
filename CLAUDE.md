@@ -17,10 +17,11 @@ vercel.json          # function maxDuration, excluded files, daily cron -> /api/
 config.yaml          # registry: chains, tokens, pairs, limits, guardrails, quote band, cron sizes
 public/index.html    # front-end page (single file, inline CSS/JS), served at /
 src/execution_cost_tracker/
-    api.py           # FastAPI routes only: /, /api/health, /api/config, /api/pairs, /api/quote, /api/cron
+    api.py           # FastAPI routes only: /, /api/health, /api/config, /api/pairs, /api/quote, /api/cron, /api/tradingview/webhook
     service.py       # API logic, framework-free: QuoteParams validation, config_view, quote, guarded_quote, cron
     registry.py      # loads and validates config.yaml (FX_CONFIG env overrides the path)
     guardrails.py    # in-memory sliding-window rate limiter, TTL cache, client IP key
+    market_hours.py  # FX hours: Monday 05:00 Sydney to Friday 17:00 New York (zoneinfo, DST-safe)
     __init__.py      # public API
     models.py        # Execution, CostSummary (trade costs); Token, Pair, Quote, ReferenceRate (FX)
     tracker.py       # ExecutionCostTracker: record, filter, summarise, CSV I/O
@@ -34,7 +35,7 @@ src/execution_cost_tracker/
         zerox.py        # 0x Swap API /swap/permit2/price (ZEROX_API_KEY)
     reference.py     # ReferenceSource protocol; Frankfurter (ECB daily) and Static sources
     metrics.py       # spread/bps math: pure functions, no network or I/O
-    storage.py       # Turso (TURSO_DATABASE_URL) or local SQLite: reference_rates, quotes, failures
+    storage.py       # Turso (TURSO_DATABASE_URL) or local SQLite: reference_rates, quotes, failures, market_mids
     run.py           # one cycle: fetch all -> compute -> store -> print; CLI entry point
 tests/
     test_tracker.py  # trade cost tracking
@@ -43,6 +44,8 @@ tests/
     test_service.py  # API logic, cron auth, storage backends (offline)
     test_registry.py # config.yaml loading and validation
     test_guardrails.py # rate limiter, cache, guarded_quote (fake clock)
+    test_market_hours.py # open/close boundaries across DST
+    test_market_mid.py # TradingView webhook, market-mid status, vs-mid on quotes
     test_api.py      # HTTP routes via TestClient (skipped if fastapi/httpx missing)
 ```
 
@@ -55,7 +58,7 @@ python -m execution_cost_tracker.run --sizes 1000,10000 --no-store   # one live 
 uvicorn app:app --reload           # local API; docs at /docs
 ```
 
-Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `MAX_NOTIONAL`. Secrets live in Vercel project settings or a local `.env`, never in code.
+Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `MAX_NOTIONAL`, `TRADINGVIEW_WEBHOOK_SECRET`. Secrets live in Vercel project settings or a local `.env`, never in code.
 
 ## Conventions
 
@@ -75,6 +78,7 @@ Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL
 - **Front end:** `public/index.html` is one self-contained file that builds its form from `/api/config` and never holds keys. It calls only this app's `/api/...` endpoints. Keep it working with `side` = buy, sell or both, and with any number of venues.
 - **Guardrails:** every public quote goes through `service.guarded_quote`, which checks the cache, then the per-client limit, then the global limit. Network calls happen outside the lock. Only results with at least one quote are cached.
 - **Quote band:** `service.quote` drops quotes priced more than `quality.max_distance_from_mid_pct` (config.yaml, default 2%) from the reference rate. They go into `excluded` and are left out of `quotes`, `rows` and `best`. The check is stateless and runs on every request, so a venue comes back as soon as it's inside the band. Never persist exclusions. The scheduled run stores every quote unfiltered, so history keeps the outliers.
+- **Market mid:** the page's "vs mkt mid" column uses the latest TradingView price stored by `/api/tradingview/webhook` (`market_mids` table). It is only valid while `market_hours.is_open(now)` holds and the price is younger than `market_mid.max_age_seconds`. Otherwise `vs_market_mid_bps` is `None` (shown as N/A) and `market_mid.reason` says why. TradingView has no data API; never scrape it. The ECB daily reference stays the basis for the 2% band and stored `deviation_bps`. Market-hours code takes `now` as a parameter and never reads the clock itself.
 - **Cross-chain:** `QuoteParams` accepts `source_chain`/`destination_chain` but rejects different values until bridge routes exist.
 - **API layering:** keep `api.py` to HTTP mapping only. Validation and logic go in `service.py`, which must not import FastAPI so it stays testable offline.
 - The `/api/cron` endpoint must stay closed unless `CRON_SECRET` is set and matches. Public inputs are validated against known pairs and venues and capped by `MAX_NOTIONAL`.
