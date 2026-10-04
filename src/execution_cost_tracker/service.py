@@ -11,6 +11,7 @@ import hmac
 import json
 import math
 import os
+import re
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -293,6 +294,8 @@ def market_mid_status(
         "pair": reference_pair,
         "available": False,
         "mid": None,
+        "bid": None,
+        "ask": None,
         "as_of": None,
         "age_seconds": None,
         "source": None,
@@ -313,7 +316,14 @@ def market_mid_status(
         out["reason"] = "no market mid received from TradingView yet"
         return out
     age = (now - row["received_at"]).total_seconds()
-    out.update(mid=row["mid"], as_of=row["received_at"].isoformat(), age_seconds=round(age, 1), source=row["source"])
+    out.update(
+        mid=row["mid"],
+        bid=row.get("bid"),
+        ask=row.get("ask"),
+        as_of=row["received_at"].isoformat(),
+        age_seconds=round(age, 1),
+        source=row["source"],
+    )
     if age > reg.market_mid_max_age_seconds:
         mins = int(age // 60)
         out["reason"] = f"last TradingView price is {mins} min old" if mins else f"last TradingView price is {int(age)}s old"
@@ -351,8 +361,17 @@ def handle_tradingview_webhook(
         raise WebhookError(503, "TRADINGVIEW_WEBHOOK_SECRET isn't set on the server")
     if reg.enforce_ip_allowlist and client_ip not in reg.tradingview_ips:
         raise WebhookError(403, f"{client_ip} isn't one of TradingView's webhook addresses")
+    text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body)
+    unfilled = sorted(set(re.findall(r"\{\{\s*([\w.]+)\s*\}\}", text)))
+    if unfilled:
+        names = ", ".join("{{%s}}" % n for n in unfilled)
+        raise WebhookError(
+            400,
+            f"TradingView sent {names} without filling it in, so it isn't a supported alert placeholder. "
+            "To send bid and ask, use the Pine script in tradingview/ (see README).",
+        )
     try:
-        data = json.loads(body)
+        data = json.loads(text)
     except (ValueError, TypeError):
         raise WebhookError(400, "body must be JSON; see the README for the alert message format") from None
     if not isinstance(data, dict):
@@ -392,10 +411,15 @@ def handle_tradingview_webhook(
     now = now or datetime.now(timezone.utc)
     conn = connect()
     try:
-        storage.save_market_mid(conn, pair, mid, "tradingview", now, ticker=ticker, bar_time=data.get("time"))
+        storage.save_market_mid(
+            conn, pair, mid, "tradingview", now, ticker=ticker, bar_time=data.get("time"), bid=bid, ask=ask
+        )
     finally:
         conn.close()
-    return {"ok": True, "pair": pair, "mid": mid, "received_at": now.isoformat()}
+    out = {"ok": True, "pair": pair, "mid": mid, "received_at": now.isoformat()}
+    if bid is not None and ask is not None:
+        out.update(bid=bid, ask=ask)
+    return out
 
 
 def drop_outside_band(result: CycleResult, max_pct: float) -> list:

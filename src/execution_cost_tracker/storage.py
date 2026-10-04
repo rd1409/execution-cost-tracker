@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS market_mids (
     mid         REAL NOT NULL,
     source      TEXT NOT NULL,
     ticker      TEXT,
-    bar_time    TEXT
+    bar_time    TEXT,
+    bid         REAL,
+    ask         REAL
 );
 CREATE INDEX IF NOT EXISTS market_mids_pair_ts ON market_mids (pair, received_at);
 CREATE INDEX IF NOT EXISTS quotes_pair_ts ON quotes (pair, ts);
@@ -89,8 +91,22 @@ def connect(path: str | Path = "fxtracker.db") -> Connection:
     for stmt in SCHEMA.split(";"):
         if stmt.strip():
             cur.execute(stmt)
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+# Columns added after a table was first created. CREATE TABLE IF NOT EXISTS
+# won't add them to an existing table, so add any that are missing.
+_ADDED_COLUMNS = {"market_mids": [("bid", "REAL"), ("ask", "REAL")]}
+
+
+def _migrate(conn: Connection) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {row["name"] for row in _dicts(_execute(conn, f"PRAGMA table_info({table})"))}
+        for name, kind in columns:
+            if name not in existing:
+                _execute(conn, f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
 
 def _execute(conn: Connection, sql: str, args: tuple | list = ()):
@@ -206,12 +222,16 @@ def save_market_mid(
     received_at: datetime,
     ticker: str | None = None,
     bar_time: str | None = None,
+    bid: float | None = None,
+    ask: float | None = None,
 ) -> None:
-    """Store one market-mid update and drop rows older than the retention window."""
+    """Store one market-mid update (with the bid and ask it came from, if
+    known) and drop rows older than the retention window."""
     _execute(
         conn,
-        "INSERT INTO market_mids VALUES (?, ?, ?, ?, ?, ?)",
-        (received_at.isoformat(), pair, mid, source, ticker, bar_time),
+        "INSERT INTO market_mids (received_at, pair, mid, source, ticker, bar_time, bid, ask)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (received_at.isoformat(), pair, mid, source, ticker, bar_time, bid, ask),
     )
     cutoff = received_at - timedelta(days=MARKET_MID_RETENTION_DAYS)
     _execute(conn, "DELETE FROM market_mids WHERE received_at < ?", (cutoff.isoformat(),))

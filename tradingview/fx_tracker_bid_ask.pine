@@ -1,0 +1,33 @@
+//@version=6
+// FX tracker: sends the live bid and ask to your app about once a minute.
+//
+// TradingView alert messages have no {{bid}} / {{ask}} placeholders, but Pine
+// scripts can read `bid` and `ask` on the 1-tick ("1T") chart. This script
+// builds the webhook message itself; the app stores the average as the mid.
+//
+// Setup (details in the repo README, "Market mid from TradingView"):
+//   1. Pine Editor -> paste this script -> Save -> Add to chart (EURUSD).
+//   2. Switch the chart to the 1-tick timeframe ("1T").
+//   3. In the script's settings, paste your TRADINGVIEW_WEBHOOK_SECRET.
+//   4. Create alert -> Condition: this script, "Any alert() function call"
+//      -> Notifications: Webhook URL = https://YOUR-APP.vercel.app/api/tradingview/webhook
+// Keep the script private (don't publish it) since its settings hold your secret.
+
+indicator("FX tracker: bid/ask webhook", overlay = true)
+
+secret    = input.string("", "Webhook secret (TRADINGVIEW_WEBHOOK_SECRET)")
+everySecs = input.int(60, "Send at most once every (seconds)", minval = 10)
+
+// varip keeps its value across realtime ticks, so the throttle survives updates.
+varip int lastSent = 0
+
+if barstate.isrealtime and not na(bid) and not na(ask) and timenow - lastSent >= everySecs * 1000
+    lastSent := timenow
+    msg = '{"secret": "' + secret + '", "ticker": "' + syminfo.ticker + '"'
+    msg := msg + ', "bid": ' + str.tostring(bid, "#.########")
+    msg := msg + ', "ask": ' + str.tostring(ask, "#.########")
+    msg := msg + ', "time": "' + str.tostring(timenow) + '"}'
+    alert(msg, alert.freq_all)
+
+// Indicators need at least one output; this one draws nothing.
+plot(na, "unused", display = display.none)

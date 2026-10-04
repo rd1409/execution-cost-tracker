@@ -176,3 +176,61 @@ def test_config_exposes_market_hours():
     assert set(cfg["market_hours"]) == {"open", "next_change", "hours"}
     assert cfg["market_mid"]["max_age_seconds"] > 0
     assert cfg["market_hours"]["open"] == market_hours.is_open(datetime.now(timezone.utc))
+
+
+# --- bid/ask ---------------------------------------------------------------------
+
+
+def test_bid_ask_stored_and_exposed(tmp_path):
+    connect = db(tmp_path)
+    raw = json.dumps({"secret": SECRET, "ticker": "EURUSD", "bid": 1.12300, "ask": 1.12320, "time": "1791381600000"})
+    out = service.handle_tradingview_webhook(raw, TV_IP, SECRET, connect=connect, now=WED)
+    assert out["mid"] == pytest.approx(1.1231) and out["bid"] == 1.123 and out["ask"] == 1.1232
+    conn = connect()
+    row = storage.latest_market_mid(conn, "EUR/USD")
+    conn.close()
+    assert (row["bid"], row["ask"]) == (1.123, 1.1232) and row["mid"] == pytest.approx(1.1231)
+    st = service.market_mid_status("EUR/USD", WED, lambda p: row)
+    assert st["available"] and (st["bid"], st["ask"]) == (1.123, 1.1232)
+
+
+def test_price_only_leaves_bid_ask_empty(tmp_path):
+    connect = db(tmp_path)
+    out = service.handle_tradingview_webhook(body(), TV_IP, SECRET, connect=connect, now=WED)
+    assert "bid" not in out
+    conn = connect()
+    row = storage.latest_market_mid(conn, "EUR/USD")
+    conn.close()
+    assert row["bid"] is None and row["ask"] is None
+
+
+def test_unfilled_placeholders_get_a_clear_error(tmp_path):
+    # What TradingView actually sends for {{bid}}/{{ask}}: it leaves them as-is.
+    raw = '{"secret": "%s", "ticker": "EURUSD", "bid": {{bid}}, "ask":{{ask}}, "time": "2026-10-04T22:00:00Z"}' % SECRET
+    with pytest.raises(service.WebhookError, match=r"\{\{ask\}\}, \{\{bid\}\}.*Pine script") as e:
+        service.handle_tradingview_webhook(raw, TV_IP, SECRET, connect=db(tmp_path), now=WED)
+    assert e.value.status == 400
+    # bytes bodies (what the API passes) are handled the same way
+    with pytest.raises(service.WebhookError, match="bid"):
+        service.handle_tradingview_webhook(raw.encode(), TV_IP, SECRET, connect=db(tmp_path), now=WED)
+
+
+def test_old_market_mids_table_is_migrated(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE market_mids (received_at TEXT NOT NULL, pair TEXT NOT NULL, mid REAL NOT NULL,"
+                " source TEXT NOT NULL, ticker TEXT, bar_time TEXT)")
+    old.execute("INSERT INTO market_mids VALUES (?, 'EUR/USD', 1.12, 'tradingview', 'EURUSD', NULL)",
+                ((WED - timedelta(minutes=1)).isoformat(),))
+    old.commit()
+    old.close()
+
+    conn = storage.connect(path)  # adds the missing columns
+    assert storage.latest_market_mid(conn, "EUR/USD")["bid"] is None
+    storage.save_market_mid(conn, "EUR/USD", 1.1231, "tradingview", WED, bid=1.123, ask=1.1232)
+    row = storage.latest_market_mid(conn, "EUR/USD")
+    assert (row["mid"], row["bid"], row["ask"]) == (1.1231, 1.123, 1.1232)
+    conn.close()
+    storage.connect(path).close()  # running the migration again is harmless

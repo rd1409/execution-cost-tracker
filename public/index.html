@@ -432,7 +432,9 @@ tr.is-best td { background: var(--best-bg); }
     var mm = res.market_mid || {};
     if (mm.available) {
       html += '<div class="refline"><span class="rate">' + mm.mid.toFixed(5) + '</span>' +
-        '<span class="what"><b>' + esc(mm.pair) + '</b> market mid from TradingView, ' + ago(mm.age_seconds) + "</span></div>";
+        '<span class="what"><b>' + esc(mm.pair) + '</b> market mid from TradingView, ' + ago(mm.age_seconds) +
+        (mm.bid != null && mm.ask != null
+          ? '<br>average of bid ' + mm.bid.toFixed(5) + ' and ask ' + mm.ask.toFixed(5) : "") + "</span></div>";
     } else if (ref) {
       html += '<div class="refline"><span class="rate">' + mid.toFixed(4) + '</span>' +
         '<span class="what"><b>' + esc(ref.pair) + '</b> ECB reference rate' +

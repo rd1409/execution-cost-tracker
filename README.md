@@ -108,26 +108,35 @@ uvicorn app:app --reload        # then open http://127.0.0.1:8000 (page) or /doc
 
 The "vs mkt mid (bps)" column compares each venue's price with the live EUR/USD mid while the interbank FX market is open, from **Monday 05:00 Sydney to Friday 17:00 New York**. Outside those hours, or if the latest price is more than 3 minutes old, it shows **N/A**, and hovering over a cell shows why. Positive means worse than mid.
 
-TradingView has no API for pulling prices out of an account. Instead, a TradingView alert **pushes** the price to this app every minute through a webhook. To set it up:
+TradingView has no API for pulling prices out of an account. Instead, TradingView **pushes** the price to this app about once a minute through a webhook. There are two ways to set it up. Both start with:
 
 1. **Turn on two-factor authentication** in your TradingView account settings. TradingView only sends webhooks from accounts with 2FA on. If the Webhook URL option is unavailable when you create the alert, your TradingView plan doesn't include webhooks.
 2. **Add a secret in Vercel.** Under Settings → Environment Variables, add `TRADINGVIEW_WEBHOOK_SECRET` with a long random string, for example from `python3 -c "import secrets; print(secrets.token_hex(32))"`. Then redeploy.
-3. **Open a EUR/USD chart** in TradingView and set the timeframe to **1 minute**.
-4. **Create an alert** (the alarm-clock icon):
-   - Condition: EURUSD, **Greater Than**, value `0`. This is always true, so the alert fires on every bar.
-   - Trigger: **Once Per Bar Close**, which means once a minute on a 1-minute chart.
-   - Expiration: the longest your plan allows. Re-create the alert when it expires.
-   - Notifications: tick **Webhook URL** and enter `https://YOUR-APP.vercel.app/api/tradingview/webhook`.
-   - Message: replace `YOUR_SECRET` with the value from step 2:
-     ```json
-     {"secret": "YOUR_SECRET", "ticker": "{{ticker}}", "price": {{close}}, "time": "{{timenow}}"}
-     ```
-5. **Check it's working.** After a minute or two during market hours, run a quote. The headline should read "EUR/USD market mid from TradingView, 30s ago". TradingView's alert log has a "Webhook status" column if anything fails.
+
+**Option A (recommended): true mid from bid and ask, using the Pine script.** TradingView alert messages have **no `{{bid}}` or `{{ask}}` placeholders**. If you type them, TradingView sends them unfilled and the app rejects the message with an explanation. Pine scripts *can* read `bid` and `ask`, but only on the 1-tick chart, so `tradingview/fx_tracker_bid_ask.pine` builds the message itself:
+
+3. In TradingView, open the **Pine Editor** (bottom panel), paste the contents of `tradingview/fx_tracker_bid_ask.pine`, **Save**, then **Add to chart** on EUR/USD.
+4. Switch the chart's timeframe to **1 tick ("1T")**. `bid` and `ask` are empty on every other timeframe.
+5. Open the script's **Settings** (gear icon on its label) and paste your secret from step 2. Keep the script private; don't publish it.
+6. **Create an alert:** Condition = *FX tracker: bid/ask webhook* → **Any alert() function call**. Expiration: the longest allowed. Notifications: tick **Webhook URL** and enter `https://YOUR-APP.vercel.app/api/tradingview/webhook`. Leave the Message box alone; the script supplies the message.
+
+The script sends at most once a minute (adjustable in its settings). The page headline then shows "market mid from TradingView, average of bid … and ask …".
+
+**Option B (simpler): the chart price.** On a 1-minute EUR/USD chart, create an alert with Condition = EURUSD **Greater Than** `0`, Trigger = **Once Per Bar Close**, Webhook URL as above, and this Message (with your secret):
+
+```json
+{"secret": "YOUR_SECRET", "ticker": "{{ticker}}", "price": {{close}}, "time": "{{timenow}}"}
+```
+
+`{{close}}` is the chart's latest price. Depending on the feed, that may be a mid or a bid; see "how to check" below.
+
+**Check it's working:** during market hours, wait a minute or two and run a quote. TradingView's alert log has a "Webhook status" column if anything fails.
 
 Notes:
 - The endpoint only accepts requests from TradingView's published webhook addresses (listed in `config.yaml`) and checks the secret in the message. Wrong secret → 401; wrong address → 403.
-- If you'd rather send a true bid/ask midpoint (e.g. from a Pine script), send `"bid"` and `"ask"` instead of `"price"`; the app stores their average.
-- Some FX charts plot bid prices rather than mid, which can put "vs mkt mid" a fraction of a basis point off. Pick the EUR/USD feed you trust.
+- The webhook accepts either `"price"` or `"bid"` plus `"ask"`; with bid and ask it stores their average as the mid and keeps both for display.
+- Option B only: to see what your chart's price is, turn on Bid and Ask lines in Chart settings. If the price sits on the bid line it's a bid; if it's halfway between the lines it's a mid. A bid instead of a mid puts "vs mkt mid" roughly 0.1–0.5 bps off on EUR/USD.
+- The Pine script hasn't been tested on a live TradingView account yet. If TradingView reports an error when you save or add it, note the message and line number; the script is short and its comments explain each part.
 - The ECB daily reference rate is still used for the 2% hidden-quotes filter, and is shown when no market mid is available.
 - Settings live under `market_mid` in `config.yaml`: how old a price can be, which TradingView ticker maps to which pair, and the IP allowlist.
 
