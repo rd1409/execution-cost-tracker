@@ -6,6 +6,8 @@ Endpoints:
     GET  /api/config   chains, tokens, pairs, venues and limits for the form
     GET  /api/pairs    one entry per (pair, chain) with token details
     POST /api/quote    on-demand quote (not stored); rate limited and cached
+    POST /api/route    price a conversion end to end: start token and chain ->
+                       venue -> end token and chain (not stored; same limits)
     GET  /api/cron     scheduled run: quote everything and store it
                        (requires ``Authorization: Bearer <CRON_SECRET>``)
     POST /api/tradingview/webhook
@@ -39,6 +41,15 @@ class QuoteRequest(BaseModel):
     source_chain: str = Field("base", description="Chain the trade starts on")
     destination_chain: str | None = Field(None, description="Chain it ends on; defaults to source_chain")
     venues: list[str] | None = Field(None, description="Venue names; omit for every venue on the chain")
+
+
+class RouteRequest(BaseModel):
+    from_token: str = Field("EURC", description="Stablecoin you start with, e.g. EURC (see /api/config stablecoins)")
+    from_chain: str = Field("base", description="Chain it starts on, e.g. base, ethereum, solana, arbitrum, polygon, tempo")
+    to_token: str = Field("USDC", description="Stablecoin you want to end with")
+    to_chain: str = Field("base", description="Chain it should arrive on")
+    amount: float = Field(10_000, gt=0, description="Amount of the start stablecoin")
+    venues: list[str] | None = Field(None, description="Venue names; omit for every venue that trades the pair")
 
 
 @app.get("/", include_in_schema=False)
@@ -88,6 +99,33 @@ def quote(req: QuoteRequest, request: Request):
             content={"detail": str(e), "retry_after": e.retry_after},
             headers={"Retry-After": str(e.retry_after)},
         )
+
+
+@app.post("/api/route")
+def route(req: RouteRequest, request: Request):
+    try:
+        params = service.RouteParams(
+            from_token=req.from_token,
+            from_chain=req.from_chain,
+            to_token=req.to_token,
+            to_chain=req.to_chain,
+            amount=req.amount,
+            venues=req.venues,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    client = guardrails.client_key(dict(request.headers), request.client.host if request.client else None)
+    try:
+        return service.guarded_route(params, client)
+    except guardrails.RateLimited as e:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": str(e), "retry_after": e.retry_after},
+            headers={"Retry-After": str(e.retry_after)},
+        )
+    except ValueError as e:  # e.g. no reference price at all
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 @app.post("/api/tradingview/webhook", include_in_schema=False)

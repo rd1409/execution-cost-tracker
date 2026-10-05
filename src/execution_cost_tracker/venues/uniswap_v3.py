@@ -8,9 +8,11 @@ from .. import chain as chainmod
 from ..models import Pair, Token
 from .base import SwapResult, Venue, best_of
 
-# https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments
 QUOTER_V2 = {
+    # https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments
     "base": "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+    # https://developers.uniswap.org/docs/protocols/v3/deployments/v3-ethereum-deployments
+    "ethereum": "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
 }
 
 DEFAULT_FEE_TIERS = [100, 500, 3000]

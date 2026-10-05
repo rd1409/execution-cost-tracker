@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FX Execution Check</title>
-<meta name="description" content="Price a tokenised FX trade across on-chain venues and see what it costs against the live interbank mid.">
+<meta name="description" content="Price a stablecoin FX conversion end to end: from your start chain to a DEX or Coinbase and on to your destination chain, with every bridge, fee and gas token.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..700&display=swap" rel="stylesheet">
@@ -21,25 +21,22 @@
   --focus: #2a5bd7;
   --bad: #9b3448;
   --best-bg: #dfeef0;
+  /* cost chart: categorical slots 1-3 of the validated reference palette */
+  --c-trade: #2a78d6;
+  --c-transfer: #eb6834;
+  --c-gas: #1baf7a;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper: #10171e;
-    --panel: #172029;
-    --ink: #e2e8ee;
-    --muted: #93a2b0;
-    --rule: #2c3945;
-    --buy: #4fb7c4;
-    --sell: #e07a8e;
-    --mid: #d8b55a;
-    --focus: #8fb0ff;
-    --bad: #f08a9c;
-    --best-bg: #17323a;
+    --paper: #10171e; --panel: #172029; --ink: #e2e8ee; --muted: #93a2b0; --rule: #2c3945;
+    --buy: #4fb7c4; --sell: #e07a8e; --mid: #d8b55a; --focus: #8fb0ff; --bad: #f08a9c; --best-bg: #17323a;
+    --c-trade: #3987e5; --c-transfer: #d95926; --c-gas: #199e70;
   }
 }
 :root[data-theme="dark"] {
   --paper: #10171e; --panel: #172029; --ink: #e2e8ee; --muted: #93a2b0; --rule: #2c3945;
   --buy: #4fb7c4; --sell: #e07a8e; --mid: #d8b55a; --focus: #8fb0ff; --bad: #f08a9c; --best-bg: #17323a;
+  --c-trade: #3987e5; --c-transfer: #d95926; --c-gas: #199e70;
 }
 
 * { box-sizing: border-box; }
@@ -53,9 +50,9 @@ body {
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
-.wrap { max-width: 1180px; margin: 0 auto; padding: 32px 16px 64px; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 32px 16px 64px; }
 
-header.page { margin-bottom: 28px; max-width: 62ch; }
+header.page { margin-bottom: 28px; max-width: 66ch; }
 header.page h1 {
   font-size: clamp(2rem, 4.2vw, 3.1rem);
   font-stretch: 72%;
@@ -67,7 +64,8 @@ header.page h1 {
 header.page p { margin: 0; color: var(--muted); }
 
 .layout { display: grid; grid-template-columns: minmax(280px, 340px) 1fr; gap: 28px; align-items: start; }
-@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .crow, .cticks { grid-template-columns: 110px 1fr 48px; } }
 
 /* ticket */
 form.ticket {
@@ -76,11 +74,12 @@ form.ticket {
   border-radius: 6px;
   padding: 20px;
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 .field { display: grid; gap: 6px; }
-.field > label, fieldset > legend { font-weight: 600; font-size: 0.92rem; }
-fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
+.field > label, fieldset > legend { font-weight: 600; font-size: 0.92rem; padding: 0; }
+fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; min-width: 0; }
+.sub-label { font-size: 0.8rem; color: var(--muted); }
 select, input[type="number"] {
   font: inherit;
   color: var(--ink);
@@ -89,28 +88,21 @@ select, input[type="number"] {
   border-radius: 4px;
   padding: 9px 10px;
   width: 100%;
+  min-width: 0;
 }
-.chains { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.notional { position: relative; }
-.notional input { padding-right: 64px; font-size: 1.25rem; font-stretch: 80%; font-weight: 600; }
-.notional .unit { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-weight: 600; }
+.pair-row { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 8px; }
+.pair-row .field { gap: 2px; }
+.amount { position: relative; }
+.amount input { padding-right: 76px; font-size: 1.25rem; font-stretch: 80%; font-weight: 600; }
+.amount .unit { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-weight: 600; }
 .presets { display: flex; gap: 6px; flex-wrap: wrap; }
-.presets button {
+.presets button, .flip {
   font: inherit; font-size: 0.85rem; color: var(--ink);
   background: transparent; border: 1px solid var(--rule); border-radius: 999px;
   padding: 3px 10px; cursor: pointer;
 }
-.presets button:hover { border-color: var(--muted); }
-
-.segmented { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
-.segmented input { position: absolute; opacity: 0; pointer-events: none; }
-.segmented label {
-  text-align: center; padding: 8px 4px; cursor: pointer; font-weight: 500;
-  border-left: 1px solid var(--rule); background: var(--paper);
-}
-.segmented label:first-of-type { border-left: 0; }
-.segmented input:checked + label { background: var(--ink); color: var(--paper); }
-.segmented input:focus-visible + label { outline: 2px solid var(--focus); outline-offset: -3px; }
+.presets button:hover, .flip:hover { border-color: var(--muted); }
+.flip-row { display: flex; justify-content: center; margin: -6px 0; }
 
 .venue-list { display: grid; gap: 4px; }
 .venue-list label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
@@ -137,128 +129,154 @@ button.go:disabled { opacity: 0.55; cursor: progress; }
 .refline .what { color: var(--muted); }
 .refline .what b { color: var(--ink); font-weight: 600; }
 .mktline { margin: -8px 0 18px; font-size: 0.88rem; color: var(--muted); max-width: 75ch; }
-td.na { color: var(--muted); }
 
-.best { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 22px; }
-.best .pick { border-top: 3px solid var(--rule); padding-top: 8px; }
-.best .pick.buy { border-color: var(--buy); }
-.best .pick.sell { border-color: var(--sell); }
-.best .pick p { margin: 0; }
-.best .pick .who { font-size: 1.35rem; font-weight: 650; font-stretch: 85%; }
-.best .pick .num { color: var(--muted); }
+.best { border-top: 3px solid var(--buy); padding-top: 10px; margin-bottom: 24px; display: grid; gap: 2px; }
+.best p { margin: 0; }
+.best .label { color: var(--muted); font-size: 0.9rem; }
+.best .who { font-size: 1.5rem; font-weight: 650; font-stretch: 85%; }
+.best .gets { font-size: 1.15rem; font-weight: 600; }
+.best .num { color: var(--muted); }
 
-/* spread ladder */
-.ladder { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px 10px; margin-bottom: 22px; }
-.ladder h2, .table-wrap h2 { font-size: 1rem; margin: 0 0 2px; }
-.ladder .sub { margin: 0 0 12px; font-size: 0.85rem; color: var(--muted); }
-.lrow { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 10px; height: 34px; }
-.lrow .name { font-size: 0.9rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.track { position: relative; height: 100%; }
-.track .midline { position: absolute; top: -6px; bottom: -6px; left: 50%; width: 2px; margin-left: -1px; background: var(--mid); }
-.track .span { position: absolute; top: 50%; height: 2px; margin-top: -1px; background: var(--muted); opacity: 0.6; }
-.dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid var(--panel); }
-.dot.sell { background: var(--sell); border-radius: 2px; transform: rotate(45deg); }
-.dot.buy { background: var(--buy); }
-.axis { display: grid; grid-template-columns: 120px 1fr; gap: 10px; margin-top: 4px; }
-.axis .ticks { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--muted); }
+/* cost chart */
+.chart { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px 12px; margin-bottom: 22px; position: relative; }
+.chart h2, .table-wrap h2 { font-size: 1rem; margin: 0 0 2px; }
+.chart .sub { margin: 0 0 12px; font-size: 0.85rem; color: var(--muted); }
+.crow { display: grid; grid-template-columns: 160px 1fr 56px; align-items: center; gap: 10px; min-height: 30px; }
+.crow .name { font-size: 0.88rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.crow .tot { font-size: 0.85rem; text-align: right; color: var(--muted); }
+.ctrack { position: relative; height: 16px; }
+.ctrack .zero { position: absolute; top: -6px; bottom: -6px; width: 1px; background: var(--muted); opacity: 0.5; }
+.seg { position: absolute; top: 0; bottom: 0; border-left: 2px solid var(--panel); }
+.seg:first-of-type { border-left: 0; }
+.seg.trade { background: var(--c-trade); }
+.seg.transfers { background: var(--c-transfer); }
+.seg.gas { background: var(--c-gas); }
+.seg.end-r { border-radius: 0 4px 4px 0; }
+.seg.end-l { border-radius: 4px 0 0 4px; }
+.cticks { display: grid; grid-template-columns: 160px 1fr 56px; gap: 10px; margin-top: 4px; }
+.cticks .ticks { position: relative; height: 1.2em; font-size: 0.76rem; color: var(--muted); }
+.cticks .ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.82rem; color: var(--muted); margin-top: 10px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
-.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
-.legend i.sell { background: var(--sell); border-radius: 1px; transform: rotate(45deg); }
-.legend i.buy { background: var(--buy); }
-.legend i.mid { width: 2px; height: 12px; border-radius: 0; background: var(--mid); }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
+.legend i.trade { background: var(--c-trade); }
+.legend i.transfers { background: var(--c-transfer); }
+.legend i.gas { background: var(--c-gas); }
+.tip {
+  position: absolute; pointer-events: none; z-index: 5;
+  background: var(--ink); color: var(--paper); font-size: 0.8rem; line-height: 1.35;
+  padding: 6px 8px; border-radius: 4px; max-width: 260px;
+}
+.tip[hidden] { display: none; }
 
 /* table */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.9rem; font-stretch: 92%; }
-th, td { text-align: right; padding: 8px 9px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th, td { text-align: right; padding: 8px 9px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 0.82rem; vertical-align: bottom; }
 th:first-child, td:first-child, th.l, td.l { text-align: left; }
-th { font-weight: 600; color: var(--muted); font-size: 0.82rem; }
-td.price { font-stretch: 78%; font-weight: 600; font-size: 1rem; }
-tr.is-best td { background: var(--best-bg); }
+td.num { white-space: nowrap; }
+@media (min-width: 641px) { td.num { white-space: normal; } }
+td.price { font-stretch: 78%; font-weight: 600; font-size: 1rem; white-space: nowrap; }
+td.na { color: var(--muted); }
+tr.is-best > td { background: var(--best-bg); }
+tr.detail > td { background: var(--panel); padding: 0; }
 .tag { display: inline-block; font-size: 0.72rem; font-weight: 650; padding: 1px 6px; border-radius: 3px; margin-left: 6px; background: var(--ink); color: var(--paper); vertical-align: 1px; }
-.side-buy { color: var(--buy); font-weight: 600; }
-.side-sell { color: var(--sell); font-weight: 600; }
+td.route { min-width: 180px; }
+.where { display: block; color: var(--muted); font-size: 0.8rem; font-weight: 400; }
+.chips { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.chip { font-size: 0.78rem; border: 1px solid var(--rule); border-radius: 999px; padding: 0 7px; white-space: nowrap; }
+button.more { font: inherit; font-weight: 600; color: var(--ink); background: transparent; border: 0; padding: 0; cursor: pointer; text-align: left; }
+button.more:hover { text-decoration: underline; }
+button.more .caret { display: inline-block; width: 1em; color: var(--muted); }
+button.more[aria-expanded="true"] .caret { transform: rotate(90deg); }
+
+@media (max-width: 640px) {
+  .table-wrap table, .table-wrap tbody, .table-wrap tr, .table-wrap td { display: block; width: 100%; }
+  .table-wrap thead { display: none; }
+  .table-wrap tr:not(.detail) { border-bottom: 1px solid var(--rule); padding: 6px 0; }
+  .table-wrap tr[hidden] { display: none; }
+  .table-wrap td { border: 0; padding: 3px 8px; text-align: left; }
+  .table-wrap td[data-label] { display: flex; justify-content: space-between; gap: 12px; }
+  .table-wrap td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: 0.82rem; font-weight: 500; }
+  .chips { align-items: flex-end; }
+}
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; text-align: left; }
+@media (max-width: 760px) { .steps { grid-template-columns: 1fr; } }
+.step { padding: 12px 14px; border-left: 1px solid var(--rule); }
+.step:first-child { border-left: 0; }
+@media (max-width: 760px) { .step { border-left: 0; border-top: 1px solid var(--rule); } .step:first-child { border-top: 0; } }
+.step h3 { margin: 0 0 6px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
+.leg { margin: 0 0 10px; white-space: normal; }
+.leg:last-child { margin-bottom: 0; }
+.leg .what { font-weight: 600; margin: 0 0 2px; }
+.leg ul { margin: 0; padding-left: 16px; color: var(--muted); font-size: 0.84rem; }
+.leg .none { color: var(--muted); font-size: 0.86rem; margin: 0; }
 
 .fails, .hidden-q { margin-top: 18px; font-size: 0.88rem; }
-.hidden-q summary { cursor: pointer; font-weight: 500; }
+.hidden-q summary, .fails summary { cursor: pointer; font-weight: 500; }
+.fails summary { color: var(--bad); }
 .hidden-q p { margin: 8px 0 0; color: var(--muted); max-width: 70ch; }
-.hidden-q ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
-.fails summary { cursor: pointer; color: var(--bad); font-weight: 500; }
-.fails ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
-.foot { margin-top: 22px; font-size: 0.82rem; color: var(--muted); max-width: 75ch; }
+.hidden-q ul, .fails ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+.foot { margin-top: 22px; font-size: 0.82rem; color: var(--muted); max-width: 80ch; }
+.foot p { margin: 0 0 6px; }
 
 .empty { border: 1px dashed var(--rule); border-radius: 6px; padding: 28px 20px; color: var(--muted); }
 .empty p { margin: 0; }
-
-@media (prefers-reduced-motion: no-preference) {
-  .dot, .span { transition: left 220ms ease, width 220ms ease; }
-}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header class="page">
     <h1>FX execution check</h1>
-    <p>Price a tokenised FX trade across on-chain venues and see what each fill costs against the live interbank EUR/USD mid.</p>
+    <p>Price a stablecoin conversion end to end: from your wallet to a DEX or Coinbase, the trade, and on to the destination chain. Every bridge, fee and gas token is shown, and the result is compared with the live interbank EUR/USD mid.</p>
   </header>
 
   <div class="layout">
     <form class="ticket" id="ticket" novalidate>
-      <div class="field">
-        <label for="pair">Pair</label>
-        <select id="pair" name="pair" required></select>
-      </div>
-
-      <div class="chains">
-        <div class="field">
-          <label for="source_chain">Starts on</label>
-          <select id="source_chain" name="source_chain"></select>
-        </div>
-        <div class="field">
-          <label for="destination_chain">Ends on</label>
-          <select id="destination_chain" name="destination_chain"></select>
-        </div>
-      </div>
-      <p class="hint" id="chain-hint" hidden></p>
-
       <fieldset>
-        <legend>Side</legend>
-        <div class="segmented" role="radiogroup" aria-label="Side">
-          <input type="radio" name="side" id="side-both" value="both" checked><label for="side-both">Both</label>
-          <input type="radio" name="side" id="side-buy" value="buy"><label for="side-buy">Buy</label>
-          <input type="radio" name="side" id="side-sell" value="sell"><label for="side-sell">Sell</label>
+        <legend>You send</legend>
+        <div class="pair-row">
+          <div class="field"><label class="sub-label" for="from_token">Stablecoin</label><select id="from_token"></select></div>
+          <div class="field"><label class="sub-label" for="from_chain">On chain</label><select id="from_chain"></select></div>
         </div>
-      </fieldset>
-
-      <div class="field">
-        <label for="notional">Size</label>
-        <div class="notional">
-          <input type="number" id="notional" name="notional" value="10000" min="1" step="any" inputmode="decimal" required>
+        <div class="amount">
+          <input type="number" id="amount" value="10000" min="1" step="any" inputmode="decimal" required aria-label="Amount to send">
           <span class="unit" id="unit">EURC</span>
         </div>
-        <div class="presets" aria-label="Common sizes">
+        <div class="presets" aria-label="Common amounts">
           <button type="button" data-size="1000">1k</button>
           <button type="button" data-size="10000">10k</button>
           <button type="button" data-size="100000">100k</button>
-          <button type="button" data-size="500000">500k</button>
+          <button type="button" data-size="1000000">1M</button>
         </div>
         <p class="hint" id="limits-hint"></p>
-      </div>
+      </fieldset>
+
+      <div class="flip-row"><button type="button" class="flip" id="flip" aria-label="Swap start and end">Swap start and end</button></div>
+
+      <fieldset>
+        <legend>You receive</legend>
+        <div class="pair-row">
+          <div class="field"><label class="sub-label" for="to_token">Stablecoin</label><select id="to_token"></select></div>
+          <div class="field"><label class="sub-label" for="to_chain">On chain</label><select id="to_chain"></select></div>
+        </div>
+      </fieldset>
+      <p class="hint" id="route-hint"></p>
 
       <fieldset>
         <legend>Venues</legend>
         <div class="venue-list" id="venues"></div>
       </fieldset>
 
-      <button class="go" type="submit" id="go">Get quotes</button>
+      <button class="go" type="submit" id="go">Find routes</button>
     </form>
 
     <section class="results" aria-labelledby="results-title">
-      <h2 id="results-title" class="visually-hidden" style="position:absolute;left:-9999px">Results</h2>
+      <h2 id="results-title" style="position:absolute;left:-9999px">Results</h2>
       <p class="status" id="status" role="status" aria-live="polite"></p>
       <div id="out">
-        <div class="empty"><p>Choose a size and get quotes to compare venues side by side.</p></div>
+        <div class="empty"><p>Pick what you start and end with, then find routes to compare every venue end to end, including the bridges and gas each one needs.</p></div>
       </div>
     </section>
   </div>
@@ -270,6 +288,7 @@ tr.is-best td { background: var(--best-bg); }
 
   var $ = function (id) { return document.getElementById(id); };
   var config = null;
+  var lastResult = null;
 
   var fmt = {
     price: function (v) { return v == null ? "–" : v.toFixed(5); },
@@ -281,7 +300,21 @@ tr.is-best td { background: var(--best-bg); }
     amt: function (v) {
       return v == null ? "–" : v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     },
-    size: function (v) { return Number(v).toLocaleString(undefined, { maximumFractionDigits: 6 }); }
+    usd: function (v) {
+      if (v == null) return "–";
+      if (v > 0 && v < 0.01) return "<$0.01";
+      return "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    },
+    native: function (v) {
+      if (v == null) return "";
+      return v < 0.0001 ? v.toExponential(2) : v.toLocaleString(undefined, { maximumSignificantDigits: 4 });
+    },
+    size: function (v) { return Number(v).toLocaleString(undefined, { maximumFractionDigits: 6 }); },
+    eta: function (s) {
+      if (s == null) return "–";
+      s = Math.round(s);
+      return s < 90 ? "~" + s + "s" : "~" + Math.round(s / 60) + " min";
+    }
   };
 
   function esc(s) {
@@ -290,77 +323,162 @@ tr.is-best td { background: var(--best-bg); }
     });
   }
 
-  function venueLabel(name) {
-    if (!config) return name;
-    for (var i = 0; i < config.venues.length; i++) if (config.venues[i].name === name) return config.venues[i].label;
-    return name;
-  }
-
   function status(msg, isError) {
     var el = $("status");
     el.textContent = msg || "";
     el.className = "status" + (isError ? " error" : "");
   }
 
-  // ---- form setup from /api/config ----------------------------------------
+  function venueLabel(name) {
+    if (!config) return name;
+    for (var i = 0; i < config.venues.length; i++) if (config.venues[i].name === name) return config.venues[i].label;
+    return name;
+  }
 
-  function currentPair() {
-    var name = $("pair").value;
-    for (var i = 0; i < config.pairs.length; i++) if (config.pairs[i].pair === name) return config.pairs[i];
+  function chainName(key) {
+    if (key === "coinbase") return "Coinbase";
+    for (var i = 0; i < config.chains.length; i++) if (config.chains[i].key === key) return config.chains[i].name;
+    return key;
+  }
+
+  function coin(sym) {
+    for (var i = 0; i < config.stablecoins.length; i++) if (config.stablecoins[i].symbol === sym) return config.stablecoins[i];
     return null;
   }
 
-  function fillChains() {
-    var pair = currentPair();
-    var chains = config.chains.filter(function (c) { return pair && pair.chains.indexOf(c.key) >= 0; });
-    ["source_chain", "destination_chain"].forEach(function (id) {
-      var sel = $(id), keep = sel.value;
-      sel.innerHTML = chains.map(function (c) {
-        return '<option value="' + esc(c.key) + '">' + esc(c.name) + "</option>";
-      }).join("");
-      if (keep && chains.some(function (c) { return c.key === keep; })) sel.value = keep;
+  function tokenOn(sym, chainKey) {
+    var c = coin(sym);
+    if (!c) return sym;
+    for (var i = 0; i < c.chains.length; i++) if (c.chains[i].key === chainKey) return c.chains[i].label || sym;
+    return sym;
+  }
+
+  function bridgeLabel(name) {
+    var bs = (config.routing && config.routing.bridges) || [];
+    for (var i = 0; i < bs.length; i++) if (bs[i].name === name) return bs[i].label;
+    return venueLabel(name);
+  }
+
+  // ---- form setup from /api/config ----------------------------------------
+
+  function fillTokens() {
+    var opts = config.stablecoins.map(function (c) {
+      return '<option value="' + esc(c.symbol) + '">' + esc(c.symbol) + "</option>";
+    }).join("");
+    $("from_token").innerHTML = opts;
+    $("to_token").innerHTML = opts;
+    $("from_token").value = config.stablecoins.some(function (c) { return c.symbol === "EURC"; }) ? "EURC" : config.stablecoins[0].symbol;
+    $("to_token").value = config.stablecoins.some(function (c) { return c.symbol === "USDC"; }) ? "USDC" : config.stablecoins[1 % config.stablecoins.length].symbol;
+  }
+
+  function fillChain(selId, sym, prefer) {
+    var sel = $(selId), keep = prefer || sel.value;
+    var c = coin(sym);
+    sel.innerHTML = c.chains.map(function (ch) {
+      var label = ch.name + (ch.available ? (ch.label && ch.label !== sym ? " (" + ch.label + ")" : "") : " (no " + sym + ")");
+      return '<option value="' + esc(ch.key) + '"' + (ch.available ? "" : " disabled") + ">" + esc(label) + "</option>";
+    }).join("");
+    var ok = c.chains.some(function (ch) { return ch.key === keep && ch.available; });
+    if (ok) sel.value = keep;
+    else {
+      var first = c.chains.filter(function (ch) { return ch.available; })[0];
+      if (first) sel.value = first.key;
+    }
+  }
+
+  function pairVenues(a, b) {
+    var names = [];
+    config.pairs.forEach(function (p) {
+      var match = (p.base === a && p.quote === b) || (p.base === b && p.quote === a);
+      if (!match) return;
+      Object.keys(p.venues).forEach(function (ch) {
+        p.venues[ch].forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
+      });
     });
-    $("unit").textContent = pair ? pair.base : "";
-    fillVenues();
-    checkChains();
+    var order = config.routing.route_venues;
+    return order.filter(function (n) { return names.indexOf(n) >= 0; });
+  }
+
+  function venueChains(name, a, b) {
+    var out = [];
+    config.pairs.forEach(function (p) {
+      var match = (p.base === a && p.quote === b) || (p.base === b && p.quote === a);
+      if (!match) return;
+      Object.keys(p.venues).forEach(function (ch) { if (p.venues[ch].indexOf(name) >= 0 && out.indexOf(ch) < 0) out.push(ch); });
+    });
+    return out;
   }
 
   function fillVenues() {
-    var pair = currentPair();
-    var chain = $("source_chain").value;
-    var names = (pair && pair.venues[chain]) || [];
+    var a = $("from_token").value, b = $("to_token").value;
+    var keep = {};
+    document.querySelectorAll('input[name="venue"]').forEach(function (i) { keep[i.value] = i.checked; });
+    var names = a === b ? [] : pairVenues(a, b);
     $("venues").innerHTML = names.map(function (n) {
-      return '<label><input type="checkbox" name="venue" value="' + esc(n) + '" checked> ' + esc(venueLabel(n)) + "</label>";
-    }).join("") || '<p class="hint">No venues are set up on this chain yet.</p>';
+      var where = n === "coinbase" ? "off-chain order book" : venueChains(n, a, b).map(chainName).join(", ");
+      var checked = keep[n] === undefined ? true : keep[n];
+      return '<label><input type="checkbox" name="venue" value="' + esc(n) + '"' + (checked ? " checked" : "") + "> " +
+        esc(venueLabel(n)) + ' <span class="sub-label">' + esc(where) + "</span></label>";
+    }).join("") || '<p class="hint">No venue trades this pair.</p>';
   }
 
-  function checkChains() {
-    var cross = $("source_chain").value !== $("destination_chain").value;
-    var hint = $("chain-hint");
-    hint.hidden = !cross;
-    hint.className = "hint warn";
-    hint.textContent = cross ? "Cross-chain routes aren't available yet. Pick the same chain for both." : "";
-    $("go").disabled = cross;
+  function updateHints() {
+    var ft = $("from_token").value, fc = $("from_chain").value, tt = $("to_token").value, tc = $("to_chain").value;
+    $("unit").textContent = tokenOn(ft, fc);
+    var hint = $("route-hint"), msgs = [], warn = false;
+    if (ft === tt) { msgs.push("Pick two different stablecoins. Plain bridging isn't supported yet."); warn = true; }
+    [fc, tc].forEach(function (k, i) {
+      config.chains.forEach(function (c) {
+        if (c.key === k && c.gas_note && msgs.join(" ").indexOf(c.gas_note) < 0) msgs.push(c.name + ": " + c.gas_note);
+      });
+    });
+    var nets = config.routing.coinbase_networks || {};
+    if ((nets[ft] || []).indexOf(fc) < 0 && !warn) msgs.push("Coinbase doesn't take " + ft + " on " + chainName(fc) + ", so the Coinbase route bridges to a supported network first.");
+    if ((nets[tt] || []).indexOf(tc) < 0 && !warn) msgs.push("Coinbase doesn't send " + tt + " on " + chainName(tc) + ", so the Coinbase route bridges after withdrawing.");
+    hint.textContent = msgs.join(" ");
+    hint.className = "hint" + (warn ? " warn" : "");
+    $("go").disabled = warn;
+  }
+
+  function onTokenChange(ev) {
+    var a = $("from_token"), b = $("to_token");
+    if (a.value === b.value && config.stablecoins.length > 1) {
+      var other = config.stablecoins.filter(function (c) { return c.symbol !== a.value; })[0].symbol;
+      (ev && ev.target === b ? a : b).value = other;
+    }
+    fillChain("from_chain", $("from_token").value);
+    fillChain("to_chain", $("to_token").value);
+    fillVenues();
+    updateHints();
+  }
+
+  function flip() {
+    var ft = $("from_token").value, fc = $("from_chain").value, tt = $("to_token").value, tc = $("to_chain").value;
+    $("from_token").value = tt; $("to_token").value = ft;
+    fillChain("from_chain", tt, tc);
+    fillChain("to_chain", ft, fc);
+    fillVenues();
+    updateHints();
   }
 
   function init() {
-    status("Loading pairs…");
+    status("Loading…");
     fetch("/api/config").then(function (r) {
-      if (!r.ok) throw new Error("Couldn't load pairs (HTTP " + r.status + ").");
+      if (!r.ok) throw new Error("Couldn't load the setup (HTTP " + r.status + ").");
       return r.json();
     }).then(function (cfg) {
       config = cfg;
-      $("pair").innerHTML = cfg.pairs.map(function (p) {
-        return '<option value="' + esc(p.pair) + '">' + esc(p.pair) + " (tracks " + esc(p.reference) + ")</option>";
-      }).join("");
+      if (!cfg.stablecoins || !cfg.routing) throw new Error("The server doesn't support routes yet. Redeploy the latest version.");
+      fillTokens();
+      fillChain("from_chain", $("from_token").value, "base");
+      fillChain("to_chain", $("to_token").value, "base");
       var lim = cfg.limits;
-      $("notional").min = lim.min_notional;
-      $("notional").max = lim.max_notional;
+      $("amount").min = lim.min_notional;
+      $("amount").max = lim.max_notional;
       $("limits-hint").textContent = "Between " + fmt.size(lim.min_notional) + " and " + fmt.size(lim.max_notional) + ".";
-      document.querySelectorAll(".presets button").forEach(function (b) {
-        b.hidden = Number(b.dataset.size) > lim.max_notional;
-      });
-      fillChains();
+      document.querySelectorAll(".presets button").forEach(function (b) { b.hidden = Number(b.dataset.size) > lim.max_notional; });
+      fillVenues();
+      updateHints();
       status("");
     }).catch(function (e) { status(e.message, true); });
   }
@@ -368,22 +486,22 @@ tr.is-best td { background: var(--best-bg); }
   // ---- submit ---------------------------------------------------------------
 
   function readForm() {
-    var venues = Array.prototype.map.call(
-      document.querySelectorAll('input[name="venue"]:checked'), function (i) { return i.value; });
+    var venues = Array.prototype.map.call(document.querySelectorAll('input[name="venue"]:checked'), function (i) { return i.value; });
     return {
-      pair: $("pair").value,
-      source_chain: $("source_chain").value,
-      destination_chain: $("destination_chain").value,
-      side: document.querySelector('input[name="side"]:checked').value,
-      notional: Number($("notional").value),
+      from_token: $("from_token").value,
+      from_chain: $("from_chain").value,
+      to_token: $("to_token").value,
+      to_chain: $("to_chain").value,
+      amount: Number($("amount").value),
       venues: venues
     };
   }
 
   function validate(req) {
     var lim = config.limits;
-    if (!isFinite(req.notional) || req.notional < lim.min_notional || req.notional > lim.max_notional)
-      return "Enter a size between " + fmt.size(lim.min_notional) + " and " + fmt.size(lim.max_notional) + ".";
+    if (req.from_token === req.to_token) return "Pick two different stablecoins.";
+    if (!isFinite(req.amount) || req.amount < lim.min_notional || req.amount > lim.max_notional)
+      return "Enter an amount between " + fmt.size(lim.min_notional) + " and " + fmt.size(lim.max_notional) + ".";
     if (!req.venues.length) return "Pick at least one venue.";
     return null;
   }
@@ -396,83 +514,84 @@ tr.is-best td { background: var(--best-bg); }
     if (problem) { status(problem, true); return; }
 
     $("go").disabled = true;
-    status("Getting quotes from " + req.venues.length + " venue" + (req.venues.length > 1 ? "s" : "") + "…");
-    fetch("/api/quote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(req)
-    }).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (body) { return { r: r, body: body }; });
-    }).then(function (x) {
-      if (x.r.status === 429) throw new Error(x.body.detail || "Too many requests. Wait a moment and try again.");
-      if (!x.r.ok) {
-        var d = x.body.detail;
-        if (Array.isArray(d)) d = d.map(function (e) { return e.msg; }).join("; ");
-        throw new Error(d || "Quote request failed (HTTP " + x.r.status + ").");
-      }
-      render(x.body);
-      var n = x.body.quotes.length, hidden = (x.body.excluded || []).length;
-      status(n ? (x.body.cached ? "Showing a result from " + x.body.cache_age_seconds + "s ago for the same request." : "")
-               : hidden ? "Every quote was more than " + x.body.band_pct + "% from the latest market price, so none are shown. Details below."
-                        : "No venue returned a quote. Details below.", !n);
-    }).catch(function (e) {
-      status(e.message || "Couldn't reach the server.", true);
-    }).then(function () { $("go").disabled = false; checkChains(); });
+    status("Pricing routes through " + req.venues.length + " venue" + (req.venues.length > 1 ? "s" : "") + ", including bridges and gas. This can take a few seconds…");
+    fetch("/api/route", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (body) { return { r: r, body: body }; });
+      }).then(function (x) {
+        if (x.r.status === 429) throw new Error(x.body.detail || "Too many requests. Wait a moment and try again.");
+        if (!x.r.ok) {
+          var d = x.body.detail;
+          if (Array.isArray(d)) d = d.map(function (e) { return e.msg; }).join("; ");
+          throw new Error(d || "Route request failed (HTTP " + x.r.status + ").");
+        }
+        lastResult = x.body;
+        render(x.body);
+        var n = x.body.routes.length, hidden = (x.body.excluded || []).length;
+        status(n ? (x.body.cached ? "Showing a result from " + x.body.cache_age_seconds + "s ago for the same request." : "")
+                 : hidden ? "Every route traded more than " + x.body.band_pct + "% from the market price, so none are shown. Details below."
+                          : "No route could be priced. Details below.", !n);
+      }).catch(function (e) {
+        status(e.message || "Couldn't reach the server.", true);
+      }).then(function () { $("go").disabled = false; updateHints(); });
   }
 
   // ---- render ---------------------------------------------------------------
 
   function render(res) {
     var req = res.request;
-    var pairCfg = currentPair();
-    var ref = res.references[req.pair];
-    var mid = ref ? ref.mid : null;
     var html = "";
-
     var mm = res.market_mid || {};
+    var ref = res.reference;
+    var rateUnit = res.quote + " per " + res.base;
+
     if (mm.available) {
       html += '<div class="refline"><span class="rate">' + mm.mid.toFixed(5) + '</span>' +
         '<span class="what"><b>' + esc(mm.pair) + '</b> market mid from TradingView, ' + ago(mm.age_seconds) +
-        (mm.bid != null && mm.ask != null
-          ? '<br>average of bid ' + mm.bid.toFixed(5) + ' and ask ' + mm.ask.toFixed(5) : "") + "</span></div>";
+        (mm.bid != null && mm.ask != null ? '<br>average of bid ' + mm.bid.toFixed(5) + ' and ask ' + mm.ask.toFixed(5) : "") + "</span></div>";
     } else if (ref) {
-      html += '<div class="refline"><span class="rate">' + mid.toFixed(5) + '</span>' +
+      html += '<div class="refline"><span class="rate">' + ref.mid.toFixed(5) + '</span>' +
         '<span class="what"><b>' + esc(ref.pair) + '</b> ' + refLabel(ref) + "</span></div>";
     }
-    html += '<p class="mktline">' + marketLine(mm, ref) + "</p>";
+    html += '<p class="mktline">' + marketLine(mm) + "</p>";
 
-    // best per side
-    var best = res.best || {};
-    var picks = ["sell", "buy"].filter(function (s) { return best[s]; }).map(function (s) {
-      var b = best[s];
-      var verb = s === "buy"
-        ? "Buy " + fmt.size(b.base_amount.toFixed(2)) + " " + pairCfg.base + " for " + fmt.amt(b.quote_amount) + " " + pairCfg.quote
-        : "Sell " + fmt.size(b.base_amount) + " " + pairCfg.base + " for " + fmt.amt(b.quote_amount) + " " + pairCfg.quote;
-      return '<div class="pick ' + s + '"><p class="num">Best to ' + s + "</p>" +
-        '<p class="who">' + esc(venueLabel(b.venue)) + "</p>" +
-        '<p class="num">' + esc(verb) + "</p>" +
-        '<p class="num">' + (b.vs_market_mid_bps == null ? "vs market mid: N/A, " + esc(naReason(mm))
-                                                          : fmt.bps(b.vs_market_mid_bps) + " bps vs market mid") + "</p></div>";
-    });
-    if (picks.length) html += '<div class="best">' + picks.join("") + "</div>";
-
-    if (res.quotes.length && mid) html += ladder(res, mid);
-    if (res.quotes.length) html += table(res, mid, pairCfg);
-    if ((res.excluded || []).length) html += hiddenNote(res, pairCfg);
-
-    if (res.failures.length) {
-      html += '<details class="fails"' + (res.quotes.length ? "" : " open") + "><summary>" +
-        res.failures.length + " attempt" + (res.failures.length > 1 ? "s" : "") + " failed</summary><ul>" +
-        res.failures.map(function (f) {
-          return "<li><b>" + esc(f.venue === "reference" ? "Market price" : venueLabel(f.venue)) + "</b>" +
-            (f.side && f.side !== "-" ? " (" + esc(f.side) + ")" : "") + ": " + esc(f.error) + "</li>";
-        }).join("") + "</ul></details>";
+    var best = res.best;
+    if (best) {
+      html += '<div class="best"><p class="label">Best route, after gas and fees</p>' +
+        '<p class="who">' + esc(routeName(best)) + "</p>" +
+        '<p class="gets">You receive ' + fmt.amt(best.amount_out) + " " + esc(tokenOn(req.to_token, req.to_chain)) + " on " + esc(chainName(req.to_chain)) + "</p>" +
+        '<p class="num">All-in ' + fmt.price(best.all_in_rate) + " " + esc(rateUnit) + ", " +
+        (best.vs_market_mid_bps == null ? "vs market mid N/A (" + esc(naReason(mm)) + ")" : fmt.bps(best.vs_market_mid_bps) + " bps vs market mid") + "</p>" +
+        '<p class="num">Gas and fees ' + fmt.usd(best.gas_usd + best.fees_usd) + (best.gas_tokens.length ? ", paid in " + gasList(best) : ", none to pay yourself") + "</p></div>";
     }
 
-    html += '<p class="foot">"vs mkt mid" compares each price with the live EUR/USD mid from TradingView while the FX market is open (Monday 05:00 Sydney to Friday 17:00 New York); positive means worse than mid. Outside those hours it shows N/A. Quotes more than ' + res.band_pct + '% from the latest market price are hidden. Gas isn\'t included. ' +
-      (res.cached ? "This result was cached; identical requests within a few seconds reuse it." : "") + "</p>";
+    var shown = res.routes;
+    if (shown.length) html += costChart(shown);
+    if (shown.length) html += table(res);
+    if ((res.excluded || []).length) html += hiddenNote(res);
+    if ((res.failures || []).length) html += failNote(res);
+
+    html += '<div class="foot">' +
+      "<p>All-in rate and \"vs mkt mid\" include gas and bridge or send fees: what arrives is compared with the full amount converted at the live EUR/USD mid from TradingView. Positive means worse than mid. Outside FX hours (Monday 05:00 Sydney to Friday 17:00 New York) it shows N/A.</p>" +
+      "<p>Gas uses each chain's current gas price and typical gas amounts, valued at Coinbase prices. Coinbase sends are charged Coinbase's estimate of the network fee; deposits are free. The Coinbase trade includes the taker fee set in config.yaml. Routes trading more than " + res.band_pct + "% from the market price are hidden.</p>" +
+      (res.cached ? "<p>This result was cached; identical requests within a few seconds reuse it.</p>" : "") + "</div>";
 
     $("out").innerHTML = html;
+    wireTable();
+    wireChart();
+  }
+
+  function routeName(r) {
+    return r.place === "coinbase" ? r.venue_label : r.venue_label + " on " + r.place_name;
+  }
+
+  function shortName(r) {
+    var v = r.place === "coinbase" ? "Coinbase" : r.venue_label.replace(/ \(.*\)$/, "");
+    return r.place === "coinbase" ? v : v + " (" + r.place_name + ")";
+  }
+
+  function gasList(r) {
+    return r.gas_tokens.map(function (g) { return g.gas_token + " on " + g.chain_name; }).join(" and ");
   }
 
   function ago(sec) {
@@ -482,8 +601,7 @@ tr.is-best td { background: var(--best-bg); }
   }
 
   function whenLocal(iso) {
-    var d = new Date(iso);
-    return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+    return new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
   }
 
   function refLabel(ref) {
@@ -497,96 +615,203 @@ tr.is-best td { background: var(--best-bg); }
     return mm.reason || "no market mid";
   }
 
-  function marketLine(mm, ref) {
+  function marketLine(mm) {
     if (!mm || mm.market_open == null) return "";
-    if (mm.available) {
-      return "FX market open until " + esc(whenLocal(mm.next_change)) + " your time.";
-    }
-    if (!mm.market_open) {
-      return "FX market closed. It reopens " + esc(whenLocal(mm.next_change)) + " your time (Monday 05:00 Sydney); until then market-mid comparisons show N/A.";
-    }
+    if (mm.available) return "FX market open until " + esc(whenLocal(mm.next_change)) + " your time.";
+    if (!mm.market_open) return "FX market closed. It reopens " + esc(whenLocal(mm.next_change)) + " your time (Monday 05:00 Sydney); until then market-mid comparisons show N/A. Costs below use the last price.";
     return "FX market open, but there's no current market mid: " + esc(mm.reason) + ". Market-mid comparisons show N/A.";
   }
 
-  function hiddenNote(res, pairCfg) {
+  // ---- where the cost goes (stacked bars, bps vs the reference mid) ---------------
+
+  var PARTS = [
+    { key: "trade", label: "Trade (price vs mid, incl. taker fee)" },
+    { key: "transfers", label: "Bridge and send fees" },
+    { key: "gas", label: "Gas and network fees" }
+  ];
+
+  function costChart(routes) {
+    var lo = 0, hi = 0;
+    routes.forEach(function (r) {
+      var b = r.cost_breakdown_bps, pos = 0, neg = 0;
+      PARTS.forEach(function (p) { var v = b[p.key] || 0; if (v >= 0) pos += v; else neg += v; });
+      hi = Math.max(hi, pos); lo = Math.min(lo, neg);
+    });
+    var span = niceSpan(hi - lo);
+    var min = lo < 0 ? -niceSpan(-lo) : 0;
+    var max = min + span < hi ? min + niceSpan(hi - min) : min + span;
+    var x = function (v) { return (v - min) / (max - min) * 100; };
+
+    var rows = routes.map(function (r, i) {
+      var b = r.cost_breakdown_bps, segs = "", posAt = 0, negAt = 0;
+      var posKeys = PARTS.filter(function (p) { return (b[p.key] || 0) > 0; });
+      var negKeys = PARTS.filter(function (p) { return (b[p.key] || 0) < 0; });
+      posKeys.forEach(function (p, j) {
+        var v = b[p.key];
+        segs += '<span class="seg ' + p.key + (j === posKeys.length - 1 ? " end-r" : "") + '" data-r="' + i + '" data-k="' + p.key + '" style="left:' + x(posAt) + "%;width:" + (x(posAt + v) - x(posAt)) + '%"></span>';
+        posAt += v;
+      });
+      negKeys.forEach(function (p, j) {
+        var v = b[p.key];
+        segs += '<span class="seg ' + p.key + (j === negKeys.length - 1 ? " end-l" : "") + '" data-r="' + i + '" data-k="' + p.key + '" style="left:' + x(negAt + v) + "%;width:" + (x(negAt) - x(negAt + v)) + '%"></span>';
+        negAt += v;
+      });
+      var aria = routeName(r) + ": " + PARTS.map(function (p) { return p.label + " " + fmt.bps(b[p.key]) + " bps"; }).join(", ");
+      return '<div class="crow" role="img" aria-label="' + esc(aria) + '"><span class="name" title="' + esc(routeName(r)) + '">' + esc(shortName(r)) + '</span>' +
+        '<div class="ctrack"><span class="zero" style="left:' + x(0) + '%"></span>' + segs + '</div><span class="tot">' + fmt.bps(b.total) + "</span></div>";
+    }).join("");
+
+    var ticks = [];
+    for (var t = 0; t <= 4; t++) ticks.push(min + (max - min) * t / 4);
+    return '<div class="chart" id="cost-chart"><h2>Where the cost goes</h2>' +
+      '<p class="sub">Basis points of the amount at the reference mid, per route. The right-hand number is the all-in total. Click a route below to see each step.</p>' + rows +
+      '<div class="cticks"><span></span><div class="ticks">' + ticks.map(function (v) {
+        return '<span style="left:' + x(v) + '%">' + (Math.abs(v) < 1e-9 ? "0" : (+v.toPrecision(3)).toString()) + "</span>";
+      }).join("") + '</div><span></span></div>' +
+      '<div class="legend">' + PARTS.map(function (p) { return '<span><i class="' + p.key + '"></i>' + esc(p.label) + "</span>"; }).join("") + "</div>" +
+      '<div class="tip" id="tip" hidden></div></div>';
+  }
+
+  function niceSpan(v) {
+    if (v <= 0) return 1;
+    var steps = [0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 500, 1000, 2000, 5000];
+    for (var i = 0; i < steps.length; i++) if (steps[i] >= v * 1.08) return steps[i];
+    return Math.ceil(v);
+  }
+
+  function wireChart() {
+    var chart = $("cost-chart"), tip = $("tip");
+    if (!chart || !lastResult) return;
+    chart.addEventListener("mousemove", function (e) {
+      var seg = e.target.closest ? e.target.closest(".seg") : null;
+      if (!seg) { tip.hidden = true; return; }
+      var r = lastResult.routes[Number(seg.dataset.r)], k = seg.dataset.k;
+      var part = PARTS.filter(function (p) { return p.key === k; })[0];
+      tip.innerHTML = "<b>" + esc(routeName(r)) + "</b><br>" + esc(part.label) + ": " + fmt.bps(r.cost_breakdown_bps[k]) + " bps<br>All-in: " + fmt.bps(r.cost_breakdown_bps.total) + " bps";
+      tip.hidden = false;
+      var box = chart.getBoundingClientRect();
+      var left = Math.min(e.clientX - box.left + 12, box.width - tip.offsetWidth - 4);
+      tip.style.left = Math.max(4, left) + "px";
+      tip.style.top = (e.clientY - box.top + 14) + "px";
+    });
+    chart.addEventListener("mouseleave", function () { tip.hidden = true; });
+  }
+
+  // ---- routes table ---------------------------------------------------------------
+
+  function table(res) {
+    var req = res.request, mm = res.market_mid;
+    var rows = res.routes.map(function (r, i) {
+      var isBest = i === 0;
+      var gas = r.gas_usd + r.fees_usd;
+      var chips = r.gas_tokens.length
+        ? '<div class="chips">' + r.gas_tokens.map(function (g) {
+            return '<span class="chip" title="' + esc(g.note || ("Needed for: " + g["for"].join("; "))) + '">' + esc(g.gas_token.replace("USD stablecoin", "USD stable")) + " (" + esc(g.chain_name) + ")</span>";
+          }).join("") + "</div>"
+        : '<span class="sub-label">None (Coinbase pays)</span>';
+      return '<tr class="' + (isBest ? "is-best" : "") + '">' +
+        '<td class="route"><button type="button" class="more" data-i="' + i + '" aria-expanded="false" aria-controls="d' + i + '" title="Show each step">' +
+          '<span class="caret" aria-hidden="true">▸</span>' + esc(shortName(r)) + "</button>" + (isBest ? '<span class="tag">Best</span>' : "") + '<span class="where">' + esc(pathText(r, req)) +
+          (r.eta_seconds != null ? ", bridging " + esc(fmt.eta(r.eta_seconds)) : "") + "</span></td>" +
+        '<td class="num" data-label="You receive">' + fmt.amt(r.amount_out) + " " + esc(tokenOn(req.to_token, req.to_chain)) + "</td>" +
+        '<td class="price" data-label="All-in rate">' + fmt.price(r.all_in_rate) + "</td>" +
+        (r.vs_market_mid_bps == null ? '<td class="na" data-label="vs mkt mid (bps)" title="' + esc(naReason(mm)) + '">N/A</td>' : '<td class="num" data-label="vs mkt mid (bps)">' + fmt.bps(r.vs_market_mid_bps) + "</td>") +
+        '<td class="num" data-label="Gas + fees"' + (r.gas_incomplete.length ? ' title="Gas for some steps couldn\'t be estimated"' : "") + ">" + fmt.usd(gas) + (r.gas_incomplete.length ? "*" : "") + "</td>" +
+        '<td class="l" data-label="Gas tokens">' + chips + "</td></tr>" +
+        '<tr class="detail" id="d' + i + '" hidden><td colspan="6">' + steps(r, req) + "</td></tr>";
+    }).join("");
+    return '<div class="table-wrap"><h2>Every route</h2><table><thead><tr>' +
+      '<th>Route</th><th>You receive</th><th title="' + esc(res.quote + " per " + res.base) + ', after gas and fees">All-in rate</th>' +
+      '<th title="All-in rate vs the live EUR/USD market mid, during FX hours">vs mkt mid<br>(bps)</th>' +
+      '<th title="Gas plus fees paid on top of the token amounts, in USD">Gas + fees</th><th class="l">Gas tokens needed</th>' +
+      "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+  }
+
+  function pathText(r, req) {
+    var bridges = function (legs) {
+      return legs.filter(function (l) { return l.kind === "bridge"; }).map(function (l) { return bridgeLabel(l.provider).replace(/ \(.*\)$/, "") + " bridge"; });
+    };
+    var venue = r.place === "coinbase" ? "Coinbase" : r.venue_label.replace(/ \(.*\)$/, "");
+    return [chainName(req.from_chain)].concat(bridges(r.to_venue), [venue], bridges(r.to_destination), [chainName(req.to_chain)]).join(" → ");
+  }
+
+  function steps(r, req) {
+    var col = function (title, legs, empty) {
+      return '<div class="step"><h3>' + esc(title) + "</h3>" + (legs.length ? legs.map(legHtml).join("") : '<p class="none">' + esc(empty) + "</p>") + "</div>";
+    };
+    var venueName = r.place === "coinbase" ? "Coinbase" : r.venue_label;
+    return '<div class="steps">' +
+      col("1. Wallet to " + venueName, r.to_venue, "Nothing to move: your " + tokenOn(req.from_token, req.from_chain) + " is already on " + r.place_name + ".") +
+      col("2. Trade", [r.trade], "") +
+      col("3. " + venueName + " to destination", r.to_destination, "Nothing to move: it arrives on " + r.place_name + ".") +
+      "</div>";
+  }
+
+  function legHtml(l) {
+    var items = [];
+    items.push(fmt.amt(l.amount_in) + " " + esc(l.token_in) + " in, " + fmt.amt(l.amount_out) + " " + esc(l.token_out) + " out");
+    if (l.kind === "swap" && l.meta && l.meta.price) items.push("Fill price " + fmt.price(l.meta.price) + (l.meta.levels_used ? ", " + l.meta.levels_used + " order-book levels" : "") + (l.meta.taker_fee_bps != null ? ", taker fee " + l.meta.taker_fee_bps + " bps" : "") + (l.meta.pool && !l.meta.levels_used ? ", pool " + esc(l.meta.pool) : ""));
+    if (l.kind === "bridge" && l.amount_in > l.amount_out) items.push("Bridge fee " + fmt.amt(l.amount_in - l.amount_out) + " " + esc(l.token_in) + " (taken from the amount)");
+    if (l.kind === "withdraw") items.push("Coinbase send fee " + fmt.amt(l.meta.send_fee) + " " + esc(l.token_in) + " (" + esc(l.meta.send_fee_basis) + ")");
+    if (l.fee_usd) items.push("Messaging fee " + fmt.usd(l.fee_usd) + ", paid on top");
+    if (l.gas) items.push("Gas " + (l.gas.native != null ? fmt.native(l.gas.native) + " " : "") + esc(l.gas.gas_token) + " (" + fmt.usd(l.gas.usd) + ") on " + esc(chainName(l.gas.chain)) + (l.gas.units ? ", ~" + l.gas.units.toLocaleString() + " gas" : ""));
+    else if (l.signer_chain) items.push("Gas paid in " + esc(gasTokenOf(l.signer_chain)) + " on " + esc(chainName(l.signer_chain)) + (l.gas_error ? " (estimate unavailable: " + esc(l.gas_error) + ")" : ""));
+    else if (l.gas_error) items.push(esc(l.gas_error));
+    else if (l.kind !== "deposit") items.push("No gas for you to pay: Coinbase handles this step");
+    if (l.eta_seconds != null) items.push("Time " + fmt.eta(l.eta_seconds));
+    if (l.alternatives && l.alternatives.length > 1) {
+      items.push("Bridges quoted: " + l.alternatives.map(function (a) {
+        return a.error ? esc(a.error) : esc(bridgeLabel(a.provider)) + " " + fmt.amt(a.amount_out) + (a.gas_usd != null ? " + " + fmt.usd(a.gas_usd) + " gas" : "") + (a.chosen ? " (used)" : "");
+      }).join("; "));
+    }
+    return '<div class="leg"><p class="what">' + esc(l.description) + "</p><ul>" + items.map(function (t) { return "<li>" + t + "</li>"; }).join("") + "</ul></div>";
+  }
+
+  function gasTokenOf(key) {
+    for (var i = 0; i < config.chains.length; i++) if (config.chains[i].key === key) return config.chains[i].gas_token;
+    return "gas";
+  }
+
+  function wireTable() {
+    document.querySelectorAll("button.more").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var row = $("d" + b.dataset.i), open = row.hidden;
+        row.hidden = !open;
+        b.setAttribute("aria-expanded", String(open));
+      });
+    });
+  }
+
+  function hiddenNote(res) {
     var ex = res.excluded.slice().sort(function (a, b) { return Math.abs(b.offset_pct) - Math.abs(a.offset_pct); });
-    return '<details class="hidden-q"' + (res.quotes.length ? "" : " open") + "><summary>" + ex.length +
-      " quote" + (ex.length > 1 ? "s" : "") + " hidden: priced more than " + res.band_pct + "% from the market price</summary>" +
-      "<p>Usually a pool with too little liquidity for this size. They're checked again on every request and come back once they're within " +
-      res.band_pct + "%.</p><ul>" +
-      ex.map(function (q) {
-        return "<li><b>" + esc(venueLabel(q.venue)) + "</b> (" + (q.side === "buy" ? "buy" : "sell") + ") at " + fmt.price(q.price) +
-          ", " + (q.offset_pct > 0 ? "+" : "") + q.offset_pct.toFixed(2) + "% from market price</li>";
+    return '<details class="hidden-q"' + (res.routes.length ? "" : " open") + "><summary>" + ex.length + " route" + (ex.length > 1 ? "s" : "") +
+      " hidden: traded more than " + res.band_pct + "% from the market price</summary>" +
+      "<p>Usually a pool with too little liquidity for this size. They're checked again on every request and come back once they're within " + res.band_pct + "%.</p><ul>" +
+      ex.map(function (r) {
+        return "<li><b>" + esc(routeName(r)) + "</b> at " + fmt.price(r.trade_price) + ", " + (r.offset_pct > 0 ? "+" : "") + r.offset_pct.toFixed(2) + "% from market price</li>";
       }).join("") + "</ul></details>";
   }
 
-  function offsetBps(price, mid) { return (price - mid) / mid * 10000; }
+  var STAGES = { to_venue: "getting there", trade: "trade", to_destination: "getting to the destination", bridge: "bridge", unknown: "error" };
 
-  function ladder(res, mid) {
-    var byVenue = {};
-    res.quotes.forEach(function (q) { (byVenue[q.venue] = byVenue[q.venue] || {})[q.side] = q; });
-    var names = Object.keys(byVenue);
-    var maxAbs = 0;
-    res.quotes.forEach(function (q) { maxAbs = Math.max(maxAbs, Math.abs(offsetBps(q.price, mid))); });
-    var steps = [2, 5, 10, 20, 50, 100, 200, 500, 1000];
-    var scale = steps.find(function (s) { return s >= maxAbs * 1.15; }) || Math.ceil(maxAbs);
-    var pos = function (p) { return 50 + (offsetBps(p, mid) / scale) * 50; };
-
-    var rows = names.map(function (n) {
-      var v = byVenue[n], s = v.sell, b = v.buy, parts = "";
-      if (s && b) {
-        var a = Math.min(pos(s.price), pos(b.price)), z = Math.max(pos(s.price), pos(b.price));
-        parts += '<span class="span" style="left:' + a + "%;width:" + (z - a) + '%"></span>';
-      }
-      if (s) parts += '<span class="dot sell" style="left:' + pos(s.price) + '%" title="Sell at ' + fmt.price(s.price) + '"></span>';
-      if (b) parts += '<span class="dot buy" style="left:' + pos(b.price) + '%" title="Buy at ' + fmt.price(b.price) + '"></span>';
-      var label = venueLabel(n) + ": " + (s ? "sell " + fmt.price(s.price) : "") + (s && b ? ", " : "") + (b ? "buy " + fmt.price(b.price) : "");
-      return '<div class="lrow" role="img" aria-label="' + esc(label) + '"><span class="name">' + esc(venueLabel(n)) +
-        '</span><div class="track"><span class="midline"></span>' + parts + "</div></div>";
-    }).join("");
-
-    return '<div class="ladder"><h2>Where each venue fills</h2>' +
-      '<p class="sub">Distance from the latest market price in basis points. A tighter pair of marks means a cheaper round trip.</p>' +
-      rows +
-      '<div class="axis"><span></span><div class="ticks"><span>−' + scale + '</span><span>−' + scale / 2 +
-      '</span><span>0</span><span>+' + scale / 2 + '</span><span>+' + scale + '</span></div></div>' +
-      '<div class="legend"><span><i class="sell"></i>Sell price</span><span><i class="buy"></i>Buy price</span><span><i class="mid"></i>Market price</span></div></div>';
-  }
-
-  function table(res, mid, pairCfg) {
-    var best = res.best || {};
-    var rows = res.quotes.slice().sort(function (a, b) {
-      if (a.side !== b.side) return a.side === "sell" ? -1 : 1;
-      return a.side === "sell" ? b.price - a.price : a.price - b.price;
-    }).map(function (q) {
-      var top = best[q.side];
-      var isBest = top && top.venue === q.venue;
-      var vsBest = top ? (q.side === "sell" ? top.price - q.price : q.price - top.price) / (mid || q.price) * 10000 : null;
-      var gives = q.side === "sell" ? fmt.amt(q.base_amount) + " " + pairCfg.base : fmt.amt(q.quote_amount) + " " + pairCfg.quote;
-      var gets = q.side === "sell" ? fmt.amt(q.quote_amount) + " " + pairCfg.quote : fmt.amt(q.base_amount) + " " + pairCfg.base;
-      var route = q.meta && (q.meta.sources && q.meta.sources.length ? q.meta.sources.join(", ") : q.meta.pool) || "";
-      return '<tr class="' + (isBest ? "is-best" : "") + '">' +
-        '<td' + (route ? ' title="Route: ' + esc(route) + '"' : "") + ">" + esc(venueLabel(q.venue)) + (isBest ? '<span class="tag">Best</span>' : "") + "</td>" +
-        '<td class="l"><span class="side-' + q.side + '">' + (q.side === "buy" ? "Buy" : "Sell") + "</span></td>" +
-        '<td class="price">' + fmt.price(q.price) + "</td>" +
-        (q.vs_market_mid_bps == null
-          ? '<td class="na" title="' + esc(naReason(res.market_mid)) + '">N/A</td>'
-          : "<td>" + fmt.bps(q.vs_market_mid_bps) + "</td>") +
-        "<td>" + (vsBest == null ? "–" : (vsBest < 0.005 ? "0.00" : "+" + vsBest.toFixed(2))) + "</td>" +
-        '<td title="for ' + esc(gives) + '">' + esc(gets) + "</td></tr>";
-    }).join("");
-    return '<div class="table-wrap"><h2>All quotes</h2><table><thead><tr>' +
-      '<th>Venue</th><th class="l">Side</th><th>Price</th><th title="Basis points vs the live EUR/USD market mid, during FX hours (Monday 05:00 Sydney to Friday 17:00 New York)">vs mkt mid (bps)</th><th title="Basis points behind the best venue">vs best (bps)</th>' +
-      '<th>You get</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+  function failNote(res) {
+    var f = res.failures;
+    return '<details class="fails"' + (res.routes.length ? "" : " open") + "><summary>" + f.length + " route" + (f.length > 1 ? "s" : "") + " couldn't be priced</summary><ul>" +
+      f.map(function (x) {
+        var where = x.place === "coinbase" ? venueLabel(x.venue) : venueLabel(x.venue) + " on " + chainName(x.place);
+        return "<li><b>" + esc(where) + "</b> (" + esc(STAGES[x.stage] || x.stage) + "): " + esc(x.error) + "</li>";
+      }).join("") + "</ul></details>";
   }
 
   // ---- wire up --------------------------------------------------------------
 
-  $("pair").addEventListener("change", fillChains);
-  $("source_chain").addEventListener("change", function () { fillVenues(); checkChains(); });
-  $("destination_chain").addEventListener("change", checkChains);
+  $("from_token").addEventListener("change", onTokenChange);
+  $("to_token").addEventListener("change", onTokenChange);
+  $("from_chain").addEventListener("change", updateHints);
+  $("to_chain").addEventListener("change", updateHints);
+  $("flip").addEventListener("click", flip);
   document.querySelectorAll(".presets button").forEach(function (b) {
-    b.addEventListener("click", function () { $("notional").value = b.dataset.size; $("notional").focus(); });
+    b.addEventListener("click", function () { $("amount").value = b.dataset.size; $("amount").focus(); });
   });
   $("ticket").addEventListener("submit", submit);
   init();

@@ -12,26 +12,29 @@ from functools import lru_cache
 from importlib import resources
 from typing import Any
 
-# Public RPC defaults. They are rate limited; set e.g. BASE_RPC_URL to a
-# provider endpoint (Alchemy, Infura, QuickNode, ...) for regular use.
-DEFAULT_RPC_URLS = {
-    "base": "https://mainnet.base.org",
-}
+# Public RPC defaults live in config.yaml (chains.<chain>.rpc_url). They are
+# rate limited; set e.g. BASE_RPC_URL to a provider endpoint (Alchemy, Infura,
+# QuickNode, ...) for regular use.
 
-CHAIN_IDS = {
-    "base": 8453,
-}
+
+def _registry_chain(chain: str):
+    from . import registry
+
+    try:
+        return registry.get().chains.get(chain)
+    except registry.RegistryError:
+        return None
 
 
 def rpc_url_for(chain: str) -> str:
-    """RPC URL for a chain: ``<CHAIN>_RPC_URL`` env var, else the default."""
+    """RPC URL for a chain: ``<CHAIN>_RPC_URL`` env var, else config.yaml's default."""
     env = os.environ.get(f"{chain.upper()}_RPC_URL")
     if env:
         return env
-    try:
-        return DEFAULT_RPC_URLS[chain]
-    except KeyError:
-        raise ValueError(f"No RPC URL for chain {chain!r}; set {chain.upper()}_RPC_URL") from None
+    c = _registry_chain(chain)
+    if c is not None and c.rpc_url:
+        return c.rpc_url
+    raise ValueError(f"No RPC URL for chain {chain!r}; set {chain.upper()}_RPC_URL")
 
 
 def _web3_module():
@@ -50,7 +53,8 @@ def get_web3(chain: str = "base", rpc_url: str | None = None) -> Any:
     web3 = _web3_module()
     url = rpc_url or rpc_url_for(chain)
     w3 = web3.Web3(web3.Web3.HTTPProvider(url, request_kwargs={"timeout": 20}))
-    expected = CHAIN_IDS.get(chain)
+    c = _registry_chain(chain)
+    expected = c.chain_id if c is not None else None
     if expected is not None:
         actual = w3.eth.chain_id
         if actual != expected:

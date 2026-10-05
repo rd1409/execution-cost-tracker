@@ -7,19 +7,27 @@ Guidance for Claude when working in this repository.
 Execution Cost Tracker is a Python package with two parts:
 
 1. **Trade cost tracking.** It records trade executions and measures their costs: commissions, fees, and slippage against a benchmark price (arrival mid, decision price, VWAP, etc.).
-2. **FX tracking.** It quotes tokenised FX pairs (EURC/USDC on Base) from on-chain venues, an aggregator and Coinbase's order book. It then scores each quote against a traditional FX reference mid and stores the results in SQLite or Turso. The market mid comes only from TradingView (webhook). A public page lets users price a trade on demand, and a daily scheduled run builds history.
+2. **FX tracking.** It quotes tokenised FX pairs (EURC/USDC on Base and Ethereum) from on-chain venues, an aggregator and Coinbase's order book. A route planner prices a conversion end to end: start stablecoin and chain (Ethereum, Solana, Base, Arbitrum, Polygon, Tempo), bridges or a Coinbase deposit, the trade, then a withdrawal or bridge to the end chain, with gas per step. It then scores each quote against a traditional FX reference mid and stores the results in SQLite or Turso. The market mid comes only from TradingView (webhook). A public page lets users price a trade on demand, and a daily scheduled run builds history.
 
 ## Layout
 
 ```
 app.py               # Vercel entrypoint: puts src/ on the path, exposes `app`
 vercel.json          # function maxDuration, excluded files, daily cron -> /api/cron
-config.yaml          # registry: chains, tokens, pairs, limits, guardrails, quote band, cron sizes
+config.yaml          # registry: chains (gas tokens, RPCs, bridge ids), tokens, pairs, routing (Coinbase networks, bridges, gas units), limits, guardrails, quote band, cron sizes
 public/index.html    # front-end page (single file, inline CSS/JS), served at /
 tradingview/         # Pine script that sends bid/ask to the webhook (TradingView has no {{bid}}/{{ask}} placeholders)
 src/execution_cost_tracker/
-    api.py           # FastAPI routes only: /, /api/health, /api/config, /api/pairs, /api/quote, /api/cron, /api/tradingview/webhook
-    service.py       # API logic, framework-free: QuoteParams validation, config_view, quote, guarded_quote, cron
+    api.py           # FastAPI routes only: /, /api/health, /api/config, /api/pairs, /api/route, /api/quote, /api/cron, /api/tradingview/webhook
+    service.py       # API logic, framework-free: RouteParams/QuoteParams validation, config_view, route, quote, guarded_*, cron
+    routes.py        # route planner: to-venue leg (deposit/bridge), trade, to-destination leg (withdraw/bridge); gas tokens; cost breakdown
+    gas.py           # GasOracle: eth_gasPrice per chain, gas-token USD price from Coinbase, Solana flat fee; Memo (thread-safe compute-once)
+    httpjson.py      # stdlib JSON GET/POST helpers with HttpError (injectable http_get/http_post everywhere)
+    bridges/
+        base.py      # Bridge interface, BridgeQuote, BridgeError, quote_wallet()
+        across.py    # Across /api/suggested-fees (ACROSS_API_KEY optional)
+        relay.py     # Relay /quote/v2 (RELAY_API_KEY)
+        layerzero.py # LayerZero Value Transfer API /v1/quotes, Stargate (LAYERZERO_API_KEY)
     registry.py      # loads and validates config.yaml (FX_CONFIG env overrides the path)
     guardrails.py    # in-memory sliding-window rate limiter, TTL cache, client IP key
     market_hours.py  # FX hours: Monday 05:00 Sydney to Friday 17:00 New York (zoneinfo, DST-safe)
@@ -50,6 +58,8 @@ tests/
     test_market_hours.py # open/close boundaries across DST
     test_market_mid.py # TradingView webhook, market-mid status, vs-mid on quotes
     test_orderbook.py # order-book walk worked examples
+    test_routes.py   # route planner and service.route with fake venues, bridges and gas
+    test_bridges.py  # Across/Relay/LayerZero parsing, gas oracle (fake HTTP)
     test_coinbase.py # Coinbase venue (fake book, fake SDK, fake HTTP), venue_params validation
     test_api.py      # HTTP routes via TestClient (skipped if fastapi/httpx missing)
 ```
@@ -63,7 +73,7 @@ python -m execution_cost_tracker.run --sizes 1000,10000 --no-store   # one live 
 uvicorn app:app --reload           # local API; docs at /docs
 ```
 
-Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `MAX_NOTIONAL`, `TRADINGVIEW_WEBHOOK_SECRET`, `COINBASE_API_KEY`, `COINBASE_API_SECRET`. Secrets live in Vercel project settings or a local `.env`, never in code.
+Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `MAX_NOTIONAL`, `TRADINGVIEW_WEBHOOK_SECRET`, `COINBASE_API_KEY`, `COINBASE_API_SECRET`, `RELAY_API_KEY`, `LAYERZERO_API_KEY`, `ACROSS_API_KEY`, and `<CHAIN>_RPC_URL` per chain. Secrets live in Vercel project settings or a local `.env`, never in code.
 
 ## Conventions
 
@@ -81,11 +91,13 @@ Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL
 - Contract addresses live as per-chain dicts at the top of each venue module, each with a source comment. Verify new addresses against official docs or Basescan before adding them.
 - **Dependencies:** runtime deps (`fastapi`, `web3`, `turso_serverless`, `pyyaml`, `coinbase-advanced-py`) are listed in `pyproject.toml` so Vercel installs them. Each is imported in exactly one place: `api.py`, `chain.py` (lazily), `storage.connect()` (only when Turso is configured), `registry.load()`, and `venues/coinbase.fetch_book()` (lazily, only when Coinbase keys are set). Everything else uses the standard library only.
 - **Registry:** chains, tokens, pairs and limits live in `config.yaml`, never hard-coded. Code gets them from `registry.get()`. Adding a token or pair is a config change. Adding a chain also needs venue contract addresses in the venue modules. Any new field gets validation in `registry.parse()` and a test in `test_registry.py`.
-- **Front end:** `public/index.html` is one self-contained file that builds its form from `/api/config` and never holds keys. It calls only this app's `/api/...` endpoints. Keep it working with `side` = buy, sell or both, and with any number of venues.
-- **Guardrails:** every public quote goes through `service.guarded_quote`, which checks the cache, then the per-client limit, then the global limit. Network calls happen outside the lock. Only results with at least one quote are cached.
+- **Front end:** `public/index.html` is one self-contained file that builds its form from `/api/config` (`stablecoins`, `chains`, `routing`) and never holds keys. It calls only this app's `/api/...` endpoints (`/api/route`). Keep it working with any number of stablecoins, chains, venues and bridges, and with chains that lack a token (shown disabled).
+- **Routes:** `routes.RoutePlanner` takes venues, bridges and a `GasOracle` as arguments and never reaches the network itself. Each `Leg` records `signer_chain` (where the user signs, so needs that chain's gas token; None for Coinbase-performed steps). Bridge quotes are memoised per request and the cheapest after gas wins; others go in `alternatives`. A failure in any leg fails only that route (`failures`, with `stage`). Coinbase deposit/withdraw networks, hubs and fixed send fees live in `routing.coinbase`; which bridges are asked about which tokens and chains lives in `routing.bridges`. `cost_breakdown_bps` parts (trade, transfers, gas) must add up to `all_in_cost_bps`. Gas USD is converted to tokens assuming the pair's quote currency is USD.
+- **Chains:** `kind` is `evm` or `solana`; Solana has no `chain_id` and per-bridge ids live in `bridge_ids`. Pairs (on-chain venues) are EVM only. Tokens may have a `label` for the chain's own name (USDC.e and EURC.e on Tempo).
+- **Guardrails:** every public quote and route goes through `service.guarded_quote` / `guarded_route` (shared `_guarded`), which checks the cache, then the per-client limit, then the global limit. Network calls happen outside the lock. Only results with at least one quote are cached.
 - **Quote band:** `service.quote` drops quotes priced more than `quality.max_distance_from_mid_pct` (config.yaml, default 2%) from the reference rate. They go into `excluded` and are left out of `quotes`, `rows` and `best`. The check is stateless and runs on every request, so a venue comes back as soon as it's inside the band. Never persist exclusions. The scheduled run stores every quote unfiltered, so history keeps the outliers.
 - **Market mid:** the page's "vs mkt mid" column uses the latest TradingView price stored by `/api/tradingview/webhook` (`market_mids` table). It is only valid while `market_hours.is_open(now)` holds and the price is younger than `market_mid.max_age_seconds`. Otherwise `vs_market_mid_bps` is `None` (shown as N/A) and `market_mid.reason` says why. TradingView has no data API; never scrape it. Alert messages have no `{{bid}}`/`{{ask}}` placeholders; bid and ask come from the Pine script in `tradingview/` (1T chart only), and the webhook stores their average plus both values. The webhook rejects bodies with unfilled `{{...}}` placeholders with an explanatory 400. Columns added to existing tables go in `storage._ADDED_COLUMNS` so `connect()` migrates old databases. The reference for sizing buys, the 2% band and stored `deviation_bps` is the latest stored TradingView price of any age (`reference.StoredMidReference`); if none exists, `run.venue_implied_reference` uses the median venue sell price. There is no ECB/Frankfurter source; don't reintroduce one. Market-hours code takes `now` as a parameter and never reads the clock itself.
-- **Cross-chain:** `QuoteParams` accepts `source_chain`/`destination_chain` but rejects different values until bridge routes exist.
+- **Cross-chain:** cross-chain conversions go through `/api/route` (`RouteParams`). `QuoteParams` (single-chain `/api/quote`) still rejects different source and destination chains.
 - **API layering:** keep `api.py` to HTTP mapping only. Validation and logic go in `service.py`, which must not import FastAPI so it stays testable offline.
 - The `/api/cron` endpoint must stay closed unless `CRON_SECRET` is set and matches. Public inputs are validated against known pairs and venues and capped by `MAX_NOTIONAL`.
 - Storage code goes through cursors and `conn.commit()`, never `sqlite3`-only features (`row_factory`, `executescript`, `with conn:`), so it works with both SQLite and Turso.

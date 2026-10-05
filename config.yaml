@@ -9,9 +9,48 @@
 # Verify every address against the issuer's official docs before adding it.
 
 chains:
+  # gas_token: what a wallet needs to pay transaction fees on the chain.
+  # gas_price_product: Coinbase product used to value that token in USD.
+  # rpc_url: public default; a <CHAIN>_RPC_URL env var (e.g. ETHEREUM_RPC_URL) overrides it.
+  ethereum:
+    name: Ethereum
+    chain_id: 1
+    gas_token: ETH
+    gas_price_product: ETH-USD
+    rpc_url: https://ethereum-rpc.publicnode.com
+    tokens:
+      USDC:
+        # https://developers.circle.com/stablecoins/usdc-contract-addresses
+        address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        decimals: 6
+      EURC:
+        # https://developers.circle.com/stablecoins/eurc-contract-addresses
+        address: "0x1aBaEA1f7C830bD89Acc67eC4af516284b1bC33c"
+        decimals: 6
+  solana:
+    name: Solana
+    kind: solana
+    gas_token: SOL
+    gas_price_product: SOL-USD
+    rpc_url: https://api.mainnet-beta.solana.com
+    bridge_ids:
+      across: 34268394551451    # https://docs.across.to/guides/migration/solana
+      relay: 792703809          # https://docs.relay.link/references/api/api_guides/solana
+    tokens:
+      USDC:
+        # https://developers.circle.com/stablecoins/usdc-contract-addresses (mint)
+        address: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+        decimals: 6
+      EURC:
+        # https://developers.circle.com/stablecoins/eurc-contract-addresses (mint)
+        address: HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr
+        decimals: 6
   base:
     name: Base
     chain_id: 8453
+    gas_token: ETH
+    gas_price_product: ETH-USD
+    rpc_url: https://mainnet.base.org
     tokens:
       USDC:
         # https://developers.circle.com/stablecoins/usdc-contract-addresses
@@ -21,6 +60,48 @@ chains:
         # https://developers.circle.com/stablecoins/eurc-contract-addresses
         address: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"
         decimals: 6
+  arbitrum:
+    name: Arbitrum
+    chain_id: 42161
+    gas_token: ETH
+    gas_price_product: ETH-USD
+    rpc_url: https://arb1.arbitrum.io/rpc
+    tokens:
+      USDC:
+        # https://developers.circle.com/stablecoins/usdc-contract-addresses
+        address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+        decimals: 6
+      # Circle doesn't issue EURC on Arbitrum, so there's no address to list.
+  polygon:
+    name: Polygon
+    chain_id: 137
+    gas_token: POL
+    gas_price_product: POL-USD
+    rpc_url: https://polygon-rpc.com
+    tokens:
+      USDC:
+        # https://developers.circle.com/stablecoins/usdc-contract-addresses
+        address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+        decimals: 6
+      # Circle doesn't issue EURC on Polygon, so there's no address to list.
+  tempo:
+    name: Tempo
+    chain_id: 4217              # https://tempo.xyz/developers/docs/quickstart/connection-details
+    gas_token: USD stablecoin
+    gas_token_usd: 1            # Tempo has no native token; fees are paid in a USD stablecoin
+    gas_note: "Fees are paid in a USD stablecoin such as USDC.e or pathUSD. EURC.e can't pay fees."
+    rpc_url: https://rpc.tempo.xyz
+    tokens:
+      # Bridged by Stargate (LayerZero); TIP-20 tokens always have 6 decimals.
+      # https://tempo.xyz/developers/docs/guide/bridge-layerzero
+      USDC:
+        address: "0x20C000000000000000000000b9537d11c60E8b50"
+        decimals: 6
+        label: USDC.e
+      EURC:
+        address: "0x20c0000000000000000000001621e21F71CF12fb"
+        decimals: 6
+        label: EURC.e
 
 pairs:
   - base: EURC          # the token being priced
@@ -31,9 +112,60 @@ pairs:
       coinbase:                 # Coinbase Advanced Trade order book (off-chain)
         product_id: EURC-USDC   # Coinbase product to walk; omit to skip Coinbase for this pair
         depth_limit: 500        # bid/ask levels to fetch; raise it if large sizes run out of depth
-        taker_fee_bps: 0        # your Coinbase taker fee in bps (e.g. 5 = 0.05%); deducted from proceeds
+        # Taker fee in bps, deducted from proceeds. EURC-USDC is a Coinbase stable pair
+        # ("fx_stablecoin": true). 0.45 bps is Coinbase Exchange's published stable-pair
+        # taker rate for standard users: https://help.coinbase.com/en/exchange/trading-and-funding/exchange-fees
+        # Coinbase doesn't publish the Advanced retail stable-pair rate outside your
+        # logged-in fee page (Advanced -> Fees -> Stablecoin pairs); set yours here.
+        taker_fee_bps: 0.45
       # Other optional per-venue settings, e.g.
       # uniswap_v3: {fee_tiers: [100, 500]}
+  - base: EURC          # Uniswap (v3 and v4) and 0x on Ethereum
+    quote: USDC
+    reference: EUR/USD
+    chains: [ethereum]
+
+routing:
+  # How a stablecoin gets from your wallet to a venue and from the venue to
+  # the destination wallet. Used by the route planner (/api/route).
+  coinbase:
+    # Networks Coinbase takes deposits on and sends withdrawals to, per token.
+    # Live list: https://api.exchange.coinbase.com/currencies/USDC (supported_networks)
+    networks:
+      # Coinbase also lists Tempo for USDC (the USDC.e token). It's left out here so
+      # Tempo routes bridge to a hub first; add "tempo" to deposit and withdraw directly.
+      USDC: [ethereum, solana, base, arbitrum, polygon]
+      EURC: [ethereum, solana, base]
+    # When the start or end chain isn't in the list above, bridge via these
+    # Coinbase networks (each one that applies is quoted; the cheapest wins).
+    bridge_hubs: [base, arbitrum, ethereum]
+    # Coinbase deducts its estimate of the network fee from each send. Without
+    # an entry here it's estimated from live gas for a token transfer. Example:
+    # withdrawal_fees: {USDC: {base: 0}}
+    withdrawal_fees: {}
+  bridges:
+    # Which tokens and chains each bridge is asked about. Across and Relay
+    # don't list EURC routes, and LayerZero's API doesn't support EURC.e, so
+    # EURC routes that need a bridge show as unavailable. Add EURC to try anyway.
+    across:                   # https://docs.across.to/api-reference/suggested-fees/get
+      tokens: [USDC]
+      chains: [ethereum, base, arbitrum, polygon, tempo, solana]
+    relay:                    # https://docs.relay.link/references/api/get-quote-v2 (RELAY_API_KEY)
+      tokens: [USDC]
+      chains: [ethereum, base, arbitrum, polygon, tempo, solana]
+    layerzero:                # Stargate via the Value Transfer API (LAYERZERO_API_KEY)
+      tokens: [USDC]
+      chains: [ethereum, base, arbitrum, polygon, tempo, solana]
+  gas_units:                  # typical gas per step on EVM chains (Tempo too)
+    transfer: 65000           # token transfer, e.g. a deposit to Coinbase
+    approve: 50000            # token approval before a swap or bridge
+    bridge: 150000            # bridge deposit (when the bridge API doesn't give its own figure)
+    swap: 180000              # DEX swap (when the venue doesn't give its own figure)
+  solana_fee_lamports: 10000  # base fee plus a small priority fee per transaction
+  quote_wallets:
+    # Placeholder addresses bridge APIs need to produce a quote. Nothing is sent.
+    evm: "0x03508bb71268bba25ecacc8f620e01866650532c"   # the example address in Relay's docs
+    solana: So11111111111111111111111111111111111111112  # wrapped-SOL mint, a well-known valid key
 
 limits:
   min_notional: 1             # smallest size a user can request (base-token units)

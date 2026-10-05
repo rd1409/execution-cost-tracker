@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from execution_cost_tracker import Side, storage
+from execution_cost_tracker import Side, registry, storage
 from execution_cost_tracker import service
 from execution_cost_tracker.reference import StaticReference
 from execution_cost_tracker.venues import SwapResult, Venue
@@ -107,10 +107,19 @@ def test_quote_single_side_and_best():
 def test_config_view_for_front_end():
     cfg = service.config_view()
     json.dumps(cfg)
-    assert [c["key"] for c in cfg["chains"]] == ["base"]
+    assert [c["key"] for c in cfg["chains"]] == ["ethereum", "solana", "base", "arbitrum", "polygon", "tempo"]
     pair = next(p for p in cfg["pairs"] if p["pair"] == "EURC/USDC")
-    assert pair["chains"] == ["base"] and pair["reference"] == "EUR/USD"
+    assert pair["chains"] == ["base", "ethereum"] and pair["reference"] == "EUR/USD"
     assert set(pair["venues"]["base"]) == {"uniswap_v3", "uniswap_v4", "aerodrome", "zerox", "coinbase"}
+    assert set(pair["venues"]["ethereum"]) == {"uniswap_v3", "uniswap_v4", "zerox"}
+    gas = {c["key"]: c["gas_token"] for c in cfg["chains"]}
+    assert gas == {"ethereum": "ETH", "solana": "SOL", "base": "ETH", "arbitrum": "ETH", "polygon": "POL", "tempo": "USD stablecoin"}
+    eurc = next(c for c in cfg["stablecoins"] if c["symbol"] == "EURC")
+    avail = {c["key"]: c["available"] for c in eurc["chains"]}
+    assert avail == {"ethereum": True, "solana": True, "base": True, "arbitrum": False, "polygon": False, "tempo": True}
+    assert next(c for c in eurc["chains"] if c["key"] == "tempo")["label"] == "EURC.e"
+    assert cfg["routing"]["coinbase_networks"]["EURC"] == ["ethereum", "solana", "base"]
+    assert {b["name"] for b in cfg["routing"]["bridges"]} == {"across", "relay", "layerzero"}
     assert {v["name"]: v["label"] for v in cfg["venues"]}["zerox"] == "0x (aggregator)"
     assert cfg["sides"] == ["both", "buy", "sell"] and cfg["cross_chain"] is False
     assert cfg["limits"]["max_notional"] >= cfg["limits"]["min_notional"] > 0
@@ -160,6 +169,14 @@ def test_check_cron_auth(header, secret, ok):
     assert service.check_cron_auth(header, secret) is ok
 
 
+BASE_ONLY = [registry.get().pair("EURC/USDC", "base")]
+
+
+def test_cron_cycle_quotes_every_listed_chain(tmp_path):
+    out = service.cron_cycle(connect=lambda: storage.connect(tmp_path / "fx.db"), reference=REF, venues=[FakeVenue("a")], sizes=[1000])
+    assert out["quotes"] == 2 * 2  # base and ethereum, both sides
+
+
 def test_cron_cycle_stores_and_closes(tmp_path):
     path = tmp_path / "fx.db"
     out = service.cron_cycle(
@@ -167,6 +184,7 @@ def test_cron_cycle_stores_and_closes(tmp_path):
         reference=REF,
         venues=[FakeVenue("a"), FakeVenue("b")],
         sizes=[1000, 5000],
+        pairs=BASE_ONLY,
     )
     assert out["quotes"] == 2 * 2 * 2 and out["failures"] == 0
     assert out["references"] == {"EURC/USDC": 1.085}
@@ -188,6 +206,7 @@ def test_cron_cycle_reports_errors(tmp_path):
         reference=REF,
         venues=[FakeVenue("ok"), Broken()],
         sizes=[1000, 5000],
+        pairs=BASE_ONLY,
     )
     assert out["quotes"] == 4 and out["failures"] == 4
     assert out["errors"] == ["EURC/USDC broken: RuntimeError: pool reverted (x4)"]
@@ -216,7 +235,7 @@ def test_cron_cycle_uses_stored_tradingview_price(tmp_path):
     conn = storage.connect(path)
     storage.save_market_mid(conn, "EUR/USD", 1.0852, "tradingview", datetime(2026, 10, 2, 20, 59, tzinfo=timezone.utc))
     conn.close()
-    out = service.cron_cycle(connect=lambda: storage.connect(path), venues=[FakeVenue()], sizes=[1000])
+    out = service.cron_cycle(connect=lambda: storage.connect(path), venues=[FakeVenue()], sizes=[1000], pairs=BASE_ONLY)
     assert out["references"] == {"EURC/USDC": 1.0852} and out["quotes"] == 2
 
 

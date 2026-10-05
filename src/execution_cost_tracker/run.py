@@ -62,15 +62,16 @@ class CycleResult:
     failures: list[Failure] = field(default_factory=list)
 
     def spreads(self) -> list[dict]:
-        """Two-sided view per (pair, venue, size): bid, ask, spread and offsets."""
+        """Two-sided view per (pair, chain, venue, size): bid, ask, spread and offsets."""
         grouped: dict[tuple, dict[Side, QuoteRow]] = {}
         for r in self.rows:
-            grouped.setdefault((r.quote.pair, r.quote.venue, r.size), {})[r.quote.side] = r
+            grouped.setdefault((r.quote.pair, r.quote.chain, r.quote.venue, r.size), {})[r.quote.side] = r
         out = []
-        for (pair, venue, size), sides in grouped.items():
+        for (pair, chain, venue, size), sides in grouped.items():
             sell, buy = sides.get(Side.SELL), sides.get(Side.BUY)
             row = {
                 "pair": pair,
+                "chain": chain,
                 "venue": venue,
                 "size": size,
                 "bid": sell.quote.price if sell else None,
@@ -87,7 +88,7 @@ class CycleResult:
                     metrics.midpoint(sell.quote.price, buy.quote.price), ref_mid
                 )
             out.append(row)
-        return sorted(out, key=lambda d: (d["pair"], d["size"], d["venue"]))
+        return sorted(out, key=lambda d: (d["pair"], d["size"], d["chain"], d["venue"]))
 
 
 def run_cycle(

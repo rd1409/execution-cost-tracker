@@ -19,6 +19,9 @@ from pathlib import Path
 from .models import Pair, Token
 
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_SOLANA_ADDRESS = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")  # base58 public key
+_KINDS = ("evm", "solana")
+_PROVIDERS = ("across", "relay", "layerzero")
 _REFERENCE = re.compile(r"^[A-Z]{3}/[A-Z]{3}$")
 
 # TradingView's published webhook sender addresses, used when config.yaml
@@ -32,10 +35,69 @@ class RegistryError(ValueError):
 
 @dataclass(frozen=True)
 class Chain:
+    """A network a stablecoin can start or end on.
+
+    ``gas_token`` is what a wallet needs to pay for transactions there.
+    ``gas_price_product`` is the Coinbase product used to value it in USD
+    (e.g. "ETH-USD"); ``gas_token_usd`` fixes the value instead (Tempo
+    charges fees in USD stablecoins, so 1). ``bridge_ids`` holds the id each
+    bridge API uses for the chain where it differs from ``chain_id``.
+    """
+
     key: str
     name: str
-    chain_id: int
+    chain_id: int | None
     tokens: dict[str, Token] = field(hash=False, compare=False)
+    kind: str = "evm"
+    gas_token: str = "ETH"
+    gas_price_product: str | None = None
+    gas_token_usd: float | None = None
+    gas_note: str = ""
+    rpc_url: str | None = None
+    bridge_ids: dict = field(default_factory=dict, hash=False, compare=False)
+
+    @property
+    def is_evm(self) -> bool:
+        return self.kind == "evm"
+
+    def bridge_id(self, provider: str):
+        """The id ``provider`` uses for this chain (defaults: EVM chain id for
+        Across and Relay, the chain key for LayerZero)."""
+        if provider in self.bridge_ids:
+            return self.bridge_ids[provider]
+        if provider == "layerzero":
+            return self.key
+        return self.chain_id
+
+
+@dataclass(frozen=True)
+class RoutingConfig:
+    """How stablecoins get to and from each venue (``routing`` in config.yaml)."""
+
+    # Networks Coinbase accepts deposits on and sends withdrawals to, per token.
+    coinbase_networks: dict = field(default_factory=dict, hash=False, compare=False)
+    # Deposit networks to bridge to when the start chain isn't one of them.
+    coinbase_hubs: tuple[str, ...] = ("base",)
+    # Fixed Coinbase send fees {token: {network: amount}}; others are estimated from live gas.
+    coinbase_withdrawal_fees: dict = field(default_factory=dict, hash=False, compare=False)
+    # Which tokens and chains each bridge provider is asked about.
+    bridges: dict = field(default_factory=dict, hash=False, compare=False)
+    gas_units: dict = field(
+        default_factory=lambda: {"transfer": 65_000, "approve": 50_000, "bridge": 150_000, "swap": 180_000},
+        hash=False,
+        compare=False,
+    )
+    solana_fee_lamports: int = 10_000
+    # Placeholder wallets sent to bridge APIs for quotes only; nothing is ever sent from them.
+    quote_wallets: dict = field(default_factory=dict, hash=False, compare=False)
+
+    def coinbase_accepts(self, token: str, chain: str) -> bool:
+        return chain in self.coinbase_networks.get(token, ())
+
+    def bridge_covers(self, provider: str, token: str, from_chain: str, to_chain: str) -> bool:
+        cfg = self.bridges.get(provider) or {}
+        chains = cfg.get("chains", ())
+        return token in cfg.get("tokens", ()) and from_chain in chains and to_chain in chains
 
 
 @dataclass(frozen=True)
@@ -49,6 +111,7 @@ class Registry:
     cache_seconds: float = 15.0
     cron_sizes: tuple[float, ...] = (1_000.0, 10_000.0, 100_000.0)
     max_distance_from_mid_pct: float = 2.0
+    routing: RoutingConfig = field(default_factory=RoutingConfig, hash=False, compare=False)
     market_mid_max_age_seconds: float = 180.0
     market_mid_symbols: dict = field(default_factory=lambda: {"EURUSD": "EUR/USD"}, hash=False, compare=False)
     tradingview_ips: tuple[str, ...] = DEFAULT_TRADINGVIEW_IPS
@@ -72,6 +135,17 @@ class Registry:
 
     def pair_names(self) -> list[str]:
         return sorted({p.name for p in self.pairs})
+
+    def stablecoins(self) -> list[str]:
+        """Every token symbol listed on any chain, in first-seen order."""
+        return list(dict.fromkeys(sym for c in self.chains.values() for sym in c.tokens))
+
+    def trade_pair(self, a: str, b: str, chain: str) -> Pair | None:
+        """The listed pair on ``chain`` made of tokens ``a`` and ``b`` in either order."""
+        for p in self.pairs:
+            if p.chain == chain and {p.base.symbol, p.quote.symbol} == {a, b}:
+                return p
+        return None
 
 
 def default_path() -> Path:
@@ -111,21 +185,47 @@ def parse(raw: object, source: str = "config") -> Registry:
     for key, c in (raw.get("chains") or {}).items():
         if not isinstance(c, dict):
             raise fail(f"chain {key!r} must be a mapping")
+        kind = str(c.get("kind", "evm"))
+        if kind not in _KINDS:
+            raise fail(f"chain {key!r} kind must be one of {', '.join(_KINDS)}")
         chain_id = c.get("chain_id")
-        if not isinstance(chain_id, int) or chain_id <= 0:
-            raise fail(f"chain {key!r} needs a positive integer chain_id")
+        if kind == "evm" or chain_id is not None:
+            if not isinstance(chain_id, int) or isinstance(chain_id, bool) or chain_id <= 0:
+                raise fail(f"chain {key!r} needs a positive integer chain_id")
+        address_re = _ADDRESS if kind == "evm" else _SOLANA_ADDRESS
         tokens: dict[str, Token] = {}
         for sym, t in (c.get("tokens") or {}).items():
             if not isinstance(t, dict):
                 raise fail(f"token {sym} on {key} must be a mapping")
             address = str(t.get("address", ""))
-            if not _ADDRESS.match(address):
+            if not address_re.match(address):
                 raise fail(f"token {sym} on {key} has an invalid address {address!r}")
             decimals = t.get("decimals")
             if not isinstance(decimals, int) or not 0 <= decimals <= 36:
                 raise fail(f"token {sym} on {key} needs integer decimals between 0 and 36")
-            tokens[str(sym)] = Token(str(sym), address, decimals)
-        chains[str(key)] = Chain(str(key), str(c.get("name", key)), chain_id, tokens)
+            tokens[str(sym)] = Token(str(sym), address, decimals, str(t.get("label") or ""))
+        usd = c.get("gas_token_usd")
+        if usd is not None and (not isinstance(usd, (int, float)) or usd <= 0):
+            raise fail(f"chain {key!r} gas_token_usd must be a positive number")
+        product = c.get("gas_price_product")
+        if product is not None and not re.match(r"^[A-Z0-9]+-[A-Z0-9]+$", str(product)):
+            raise fail(f"chain {key!r} gas_price_product must look like 'ETH-USD', got {product!r}")
+        bridge_ids = c.get("bridge_ids") or {}
+        if not isinstance(bridge_ids, dict) or any(k not in _PROVIDERS for k in bridge_ids):
+            raise fail(f"chain {key!r} bridge_ids may only set {', '.join(_PROVIDERS)}")
+        chains[str(key)] = Chain(
+            str(key),
+            str(c.get("name", key)),
+            chain_id,
+            tokens,
+            kind=kind,
+            gas_token=str(c.get("gas_token", "ETH")),
+            gas_price_product=str(product) if product else None,
+            gas_token_usd=float(usd) if usd is not None else None,
+            gas_note=str(c.get("gas_note") or ""),
+            rpc_url=str(c["rpc_url"]) if c.get("rpc_url") else None,
+            bridge_ids=dict(bridge_ids),
+        )
     if not chains:
         raise fail("no chains defined")
 
@@ -147,6 +247,8 @@ def parse(raw: object, source: str = "config") -> Registry:
             chain = chains.get(chain_key)
             if chain is None:
                 raise fail(f"pair {base}/{quote} uses unknown chain {chain_key!r}")
+            if not chain.is_evm:
+                raise fail(f"pair {base}/{quote}: on-chain venues are EVM only, so it can't trade on {chain_key}")
             for sym in (base, quote):
                 if sym not in chain.tokens:
                     raise fail(f"pair {base}/{quote} needs token {sym} on chain {chain_key}")
@@ -188,9 +290,11 @@ def parse(raw: object, source: str = "config") -> Registry:
         raise fail("market_mid.enforce_ip_allowlist must be true or false")
     if enforce and not ips:
         raise fail("market_mid.enforce_ip_allowlist is true but tradingview_ips is empty")
+    routing = _parse_routing(raw.get("routing"), chains, fail)
     try:
         reg = Registry(
             chains=chains,
+            routing=routing,
             pairs=tuple(pairs),
             min_notional=float(limits.get("min_notional", 1)),
             max_notional=float(limits.get("max_notional", 1_000_000)),
@@ -239,6 +343,89 @@ def _check_venue_params(vp: object, pair: str, fail) -> None:
     fee = cb.get("taker_fee_bps", 0)
     if not isinstance(fee, (int, float)) or not 0 <= fee <= 100:
         raise fail(f"pair {pair}: coinbase.taker_fee_bps must be between 0 and 100")
+
+
+def _parse_routing(raw: object, chains: dict[str, Chain], fail) -> RoutingConfig:
+    """Validate the ``routing`` section; every chain and token it names must exist."""
+    if raw is None:
+        return RoutingConfig()
+    if not isinstance(raw, dict):
+        raise fail("routing must be a mapping")
+    symbols = {sym for c in chains.values() for sym in c.tokens}
+
+    def chain_list(value, where: str) -> tuple[str, ...]:
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise fail(f"{where} must be a list of chain names")
+        unknown = [v for v in value if v not in chains]
+        if unknown:
+            raise fail(f"{where} names unknown chain(s) {', '.join(unknown)}")
+        return tuple(value)
+
+    def token_list(value, where: str) -> tuple[str, ...]:
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise fail(f"{where} must be a list of token symbols")
+        unknown = [v for v in value if v not in symbols]
+        if unknown:
+            raise fail(f"{where} names unknown token(s) {', '.join(unknown)}")
+        return tuple(value)
+
+    cb = raw.get("coinbase") or {}
+    if not isinstance(cb, dict):
+        raise fail("routing.coinbase must be a mapping")
+    networks = {}
+    for sym, on in (cb.get("networks") or {}).items():
+        if sym not in symbols:
+            raise fail(f"routing.coinbase.networks names unknown token {sym}")
+        networks[sym] = chain_list(on, f"routing.coinbase.networks.{sym}")
+        missing = [ch for ch in networks[sym] if sym not in chains[ch].tokens]
+        if missing:
+            raise fail(f"routing.coinbase.networks.{sym}: {sym} isn't listed on {', '.join(missing)}")
+    hubs = chain_list(cb.get("bridge_hubs", ["base"]), "routing.coinbase.bridge_hubs")
+    fees = cb.get("withdrawal_fees") or {}
+    if not isinstance(fees, dict):
+        raise fail("routing.coinbase.withdrawal_fees must map tokens to {network: fee}")
+    for sym, per in fees.items():
+        if sym not in symbols or not isinstance(per, dict):
+            raise fail(f"routing.coinbase.withdrawal_fees.{sym} must be a mapping for a known token")
+        for net, fee in per.items():
+            if net not in chains or not isinstance(fee, (int, float)) or fee < 0:
+                raise fail(f"routing.coinbase.withdrawal_fees.{sym}.{net} must be a non-negative number for a known chain")
+
+    bridges = {}
+    for name, b in (raw.get("bridges") or {}).items():
+        if name not in _PROVIDERS:
+            raise fail(f"routing.bridges.{name}: unknown provider; choose from {', '.join(_PROVIDERS)}")
+        if not isinstance(b, dict):
+            raise fail(f"routing.bridges.{name} must be a mapping")
+        bridges[name] = {
+            "tokens": token_list(b.get("tokens", []), f"routing.bridges.{name}.tokens"),
+            "chains": chain_list(b.get("chains", []), f"routing.bridges.{name}.chains"),
+        }
+
+    units = dict(RoutingConfig().gas_units)
+    for k, v in (raw.get("gas_units") or {}).items():
+        if k not in units or not isinstance(v, int) or v <= 0:
+            raise fail(f"routing.gas_units.{k} must be a positive whole number for one of {', '.join(units)}")
+        units[k] = v
+    lamports = raw.get("solana_fee_lamports", 10_000)
+    if not isinstance(lamports, int) or lamports < 0:
+        raise fail("routing.solana_fee_lamports must be a non-negative whole number")
+    wallets = raw.get("quote_wallets") or {}
+    if not isinstance(wallets, dict):
+        raise fail("routing.quote_wallets must be a mapping")
+    if wallets.get("evm") and not _ADDRESS.match(str(wallets["evm"])):
+        raise fail("routing.quote_wallets.evm must be a 0x address")
+    if wallets.get("solana") and not _SOLANA_ADDRESS.match(str(wallets["solana"])):
+        raise fail("routing.quote_wallets.solana must be a base58 address")
+    return RoutingConfig(
+        coinbase_networks=networks,
+        coinbase_hubs=hubs,
+        coinbase_withdrawal_fees={k: dict(v) for k, v in fees.items()},
+        bridges=bridges,
+        gas_units=units,
+        solana_fee_lamports=lamports,
+        quote_wallets={k: str(v) for k, v in wallets.items()},
+    )
 
 
 @lru_cache(maxsize=1)

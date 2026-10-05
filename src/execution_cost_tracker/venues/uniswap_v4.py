@@ -16,6 +16,7 @@ from .base import SwapResult, Venue, best_of
 # https://developers.uniswap.org/docs/protocols/v4/deployments
 QUOTER = {
     "base": "0x0d5e0f971ed27fbff6c2837bf31316121532048d",
+    "ethereum": "0x52f0e24d1c21c8a0cb1e5a5dd6198556bd9e1203",
 }
 
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"

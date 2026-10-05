@@ -18,11 +18,14 @@ from datetime import datetime, timezone
 from typing import Callable, Iterable, Sequence
 
 from . import market_hours, metrics, registry, storage
+from .bridges import BRIDGES, Bridge
+from .gas import GasOracle
 from .guardrails import RateLimited, SlidingWindowLimiter, TTLCache
 from .models import Pair, Side
 from .reference import ReferenceSource, StoredMidReference
 from .registry import Registry
-from .run import CycleResult, build_venues, default_pairs, default_sizes, run_cycle
+from .routes import COINBASE, RoutePlanner, RouteRequest
+from .run import CycleResult, build_venues, default_pairs, default_sizes, run_cycle, venue_implied_reference
 from .venues import VENUES, Venue
 
 VenueFactory = Callable[[Iterable[str]], list[Venue]]
@@ -38,6 +41,9 @@ SIDE_CHOICES = ("both", "buy", "sell")
 
 __all__ = [
     "QuoteParams",
+    "RouteParams",
+    "guarded_route",
+    "route",
     "RateLimited",
     "WebhookError",
     "config_view",
@@ -157,6 +163,159 @@ class QuoteParams:
         }
 
 
+def route_venues(reg: Registry | None = None) -> list[str]:
+    """Venues that can trade at least one listed pair (and so can be routed through)."""
+    reg = reg or registry.get()
+    return [n for n in VENUES if any(VENUES[n]().supports(p) for p in reg.pairs)]
+
+
+@dataclass
+class RouteParams:
+    """Validated inputs for one route request: start token and chain, end
+    token and chain, and the amount of the start token.
+
+    Raises ValueError with a user-readable message on any invalid input.
+    """
+
+    from_token: str = "EURC"
+    from_chain: str = "base"
+    to_token: str = "USDC"
+    to_chain: str = "base"
+    amount: float = 10_000.0
+    venues: list[str] | None = None
+    registry: Registry | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        reg = self.registry or registry.get()
+        self.registry = reg
+        coins = reg.stablecoins()
+        for which, sym, chain in (("start", self.from_token, self.from_chain), ("end", self.to_token, self.to_chain)):
+            if sym not in coins:
+                raise ValueError(f"unknown {which} stablecoin {sym!r}; choose from {', '.join(coins)}")
+            if chain not in reg.chains:
+                raise ValueError(f"unknown {which} chain {chain!r}; choose from {', '.join(reg.chains)}")
+            if sym not in reg.chains[chain].tokens:
+                raise ValueError(f"{sym} isn't available on {reg.chains[chain].name} (no token address is listed in config.yaml)")
+        if self.from_token == self.to_token:
+            raise ValueError("choose two different stablecoins; plain bridging without a conversion isn't supported yet")
+        pairs = [p for p in reg.pairs if {p.base.symbol, p.quote.symbol} == {self.from_token, self.to_token}]
+        if not pairs:
+            raise ValueError(f"no listed pair converts {self.from_token} to {self.to_token}")
+        self._pair = pairs[0]
+
+        try:
+            self.amount = float(self.amount)
+        except (TypeError, ValueError):
+            raise ValueError("amount must be a number") from None
+        lo, hi = reg.min_notional, max_notional(reg)
+        if not math.isfinite(self.amount) or not lo <= self.amount <= hi:
+            raise ValueError(f"amount must be between {lo:,.0f} and {hi:,.0f} {self.from_token}")
+
+        available = [n for n in route_venues(reg) if any(VENUES[n]().supports(p) for p in pairs)]
+        if self.venues is None:
+            self.venues = available
+        self.venues = list(dict.fromkeys(self.venues))
+        if not self.venues:
+            raise ValueError("choose at least one venue")
+        unknown = [v for v in self.venues if v not in VENUES]
+        if unknown:
+            raise ValueError(f"unknown venue(s) {', '.join(unknown)}; choose from {', '.join(VENUES)}")
+        unsupported = [v for v in self.venues if v not in available]
+        if unsupported:
+            raise ValueError(f"{', '.join(unsupported)} can't trade {self.from_token} for {self.to_token}")
+
+    @property
+    def pair_obj(self) -> Pair:
+        return self._pair
+
+    def cache_key(self) -> tuple:
+        return (
+            "route",
+            self.from_token,
+            self.from_chain,
+            self.to_token,
+            self.to_chain,
+            round(self.amount, 6),
+            tuple(sorted(self.venues)),
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            "from_token": self.from_token,
+            "from_chain": self.from_chain,
+            "to_token": self.to_token,
+            "to_chain": self.to_chain,
+            "amount": self.amount,
+            "venues": list(self.venues),
+        }
+
+
+def route(
+    params: RouteParams,
+    venues: dict[str, Venue] | None = None,
+    bridges: Sequence[Bridge] | None = None,
+    gas: GasOracle | None = None,
+    mid_lookup: MidLookup | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Price converting ``params.amount`` of the start stablecoin into the end
+    stablecoin through every chosen venue, including getting there and back
+    (see ``routes.py``). Not stored.
+
+    Routes whose trade price is more than ``quality.max_distance_from_mid_pct``
+    from the reference rate go to ``excluded``, as with ``quote``.
+    """
+    reg = params.registry
+    lookup = _read_once(mid_lookup or stored_mid_lookup)
+    pair = params.pair_obj
+    if venues is None:
+        venues = {v.name: v for v in build_venues(params.venues)}
+    else:
+        venues = {k: v for k, v in venues.items() if k in params.venues}
+
+    try:
+        ref = StoredMidReference(lookup).mid(pair.reference)
+    except Exception as e:
+        # No TradingView price yet: estimate a mid from venue prices for 1,000 base.
+        ref = venue_implied_reference(pair, list(venues.values()), 1_000.0)
+        if ref is None:
+            raise ValueError(f"no reference price for {pair.reference}: {e}") from None
+
+    planner = RoutePlanner(
+        reg,
+        venues,
+        bridges if bridges is not None else [cls() for cls in BRIDGES.values()],
+        gas or GasOracle(reg),
+        ref.mid,
+        venue_labels=VENUE_LABELS,
+    )
+    plan = planner.plan(
+        RouteRequest(params.from_token, params.from_chain, params.to_token, params.to_chain, params.amount, params.venues)
+    )
+
+    mm = market_mid_status(pair.reference, now or datetime.now(timezone.utc), lookup, reg)
+    for r in plan.routes + plan.excluded:
+        live = mm["available"]
+        r["vs_market_mid_bps"] = (
+            metrics.deviation_bps(r["all_in_rate"], mm["mid"], r["side"]) if live and r["all_in_rate"] else None
+        )
+        r["trade_vs_market_mid_bps"] = metrics.deviation_bps(r["trade_price"], mm["mid"], r["side"]) if live else None
+    return {
+        "request": params.as_dict(),
+        "pair": plan.pair,
+        "side": "sell" if plan.selling_base else "buy",
+        "base": pair.base.symbol,
+        "quote": pair.quote.symbol,
+        "reference": {"pair": ref.pair, "mid": ref.mid, "source": ref.source, "as_of": ref.as_of, "timestamp": _iso(ref.timestamp)},
+        "market_mid": mm,
+        "band_pct": planner.band_pct,
+        "routes": plan.routes,
+        "best": plan.routes[0] if plan.routes else None,
+        "excluded": plan.excluded,
+        "failures": plan.failures,
+    }
+
+
 # --- config for the front end ----------------------------------------------
 
 
@@ -179,16 +338,46 @@ def config_view(reg: Registry | None = None) -> dict:
         )
         entry["chains"].append(p.chain)
         entry["venues"][p.chain] = venues_for(p)
+    routing = reg.routing
     return {
         "chains": [
             {
                 "key": c.key,
                 "name": c.name,
                 "chain_id": c.chain_id,
+                "kind": c.kind,
+                "gas_token": c.gas_token,
+                "gas_note": c.gas_note,
                 "tokens": [asdict(t) for t in c.tokens.values()],
             }
             for c in reg.chains.values()
         ],
+        "stablecoins": [
+            {
+                "symbol": sym,
+                "chains": [
+                    {
+                        "key": c.key,
+                        "name": c.name,
+                        "available": sym in c.tokens,
+                        "label": c.tokens[sym].display if sym in c.tokens else None,
+                        "coinbase_direct": routing.coinbase_accepts(sym, c.key),
+                    }
+                    for c in reg.chains.values()
+                ],
+            }
+            for sym in reg.stablecoins()
+        ],
+        "routing": {
+            "coinbase_networks": {k: list(v) for k, v in routing.coinbase_networks.items()},
+            "coinbase_hubs": list(routing.coinbase_hubs),
+            "bridges": [
+                {"name": n, "label": BRIDGES[n].label, **{k: list(v) for k, v in cfg.items()}}
+                for n, cfg in routing.bridges.items()
+                if n in BRIDGES
+            ],
+            "route_venues": route_venues(reg),
+        },
         "pairs": list(pairs.values()),
         "venues": [{"name": n, "label": VENUE_LABELS.get(n, n)} for n in VENUES],
         "sides": list(SIDE_CHOICES),
@@ -512,8 +701,17 @@ def guarded_quote(params: QuoteParams, client: str, guard: Guard | None = None, 
     limit and the global limit both apply; exceeding either raises
     :class:`RateLimited`.
     """
+    return _guarded(params.cache_key(), client, guard, lambda: quote(params, **quote_kwargs), lambda out: bool(out["quotes"]))
+
+
+def guarded_route(params: RouteParams, client: str, guard: Guard | None = None, **route_kwargs) -> dict:
+    """:func:`route` behind the same guardrails as :func:`guarded_quote`
+    (shared limits; a separate cache key per route request)."""
+    return _guarded(params.cache_key(), client, guard, lambda: route(params, **route_kwargs), lambda out: bool(out["routes"]))
+
+
+def _guarded(key: tuple, client: str, guard: Guard | None, fn: Callable[[], dict], cacheable: Callable[[dict], bool]) -> dict:
     g = guard or default_guard()
-    key = params.cache_key()
     with g.lock:
         hit = g.cache.get(key)
         if hit is not None:
@@ -527,9 +725,9 @@ def guarded_quote(params: QuoteParams, client: str, guard: Guard | None = None, 
         g.per_client.record(client)
         g.global_.record("*")
 
-    out = quote(params, **quote_kwargs)  # network calls happen outside the lock
+    out = fn()  # network calls happen outside the lock
 
-    if out["quotes"]:  # don't cache total failures; let the next try go through
+    if cacheable(out):  # don't cache total failures; let the next try go through
         with g.lock:
             g.cache.set(key, out)
     return {**out, "cached": False, "cache_age_seconds": 0.0}

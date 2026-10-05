@@ -78,11 +78,19 @@ The reference price is the latest EUR/USD price received from TradingView (see "
 | `GET /api/health` | Liveness check |
 | `GET /api/config` | Chains, tokens, pairs, venues and limits the front end builds its form from |
 | `GET /api/pairs` | One entry per pair and chain, with token details |
-| `POST /api/quote` | On-demand quote, not stored. Rate limited and briefly cached; see below. |
+| `POST /api/route` | What the page uses: prices a conversion end to end, from a start stablecoin and chain to an end stablecoin and chain, through every venue. Not stored; same rate limits and cache. |
+| `POST /api/quote` | Single-chain quote for one pair, not stored. Rate limited and briefly cached; see below. |
 | `POST /api/tradingview/webhook` | TradingView alert pushes the live EUR/USD price. Secret in the message; TradingView's IPs only. |
 | `GET /api/cron` | Scheduled run: quotes every pair, venue and size, then stores everything. Requires `Authorization: Bearer <CRON_SECRET>`. |
 
-An example `POST /api/quote` body (every field is optional):
+An example `POST /api/route` body (every field is optional):
+
+```json
+{"from_token": "USDC", "from_chain": "tempo", "to_token": "EURC", "to_chain": "solana",
+ "amount": 50000, "venues": ["coinbase", "uniswap_v3", "aerodrome"]}
+```
+
+See "Routes" below for what comes back. An example `POST /api/quote` body (every field is optional):
 
 ```json
 {"pair": "EURC/USDC", "notional": 25000, "side": "both",
@@ -158,6 +166,45 @@ Settings under `venue_params.coinbase` for the pair in `config.yaml`:
 
 With `COINBASE_API_KEY` and `COINBASE_API_SECRET` set, the book comes through Coinbase's SDK (`coinbase-advanced-py`). Without them it uses Coinbase's public product-book endpoint. A secret pasted on one line with literal `\n` is accepted.
 
+### Routes: start and end on any chain
+
+The page asks for the stablecoin you start with and its chain, and the stablecoin you want and the chain it should arrive on. Chains: Ethereum, Solana, Base, Arbitrum, Polygon and Tempo. For every venue that trades the pair, `routes.py` builds and prices a route in three steps:
+
+1. **Wallet to venue.**
+   - **DEX on the start chain:** nothing to move.
+   - **DEX on another chain:** a bridge. Uniswap trades on Base and Ethereum, Aerodrome on Base, and 0x on Base and Ethereum.
+   - **Coinbase:** a plain send to your deposit address if Coinbase takes the coin on that chain. Otherwise a bridge to a Coinbase network, with your deposit address as the bridge's recipient.
+2. **The trade.**
+   - **DEXes:** the existing quoters.
+   - **Coinbase:** a walk of the EURC-USDC order book as a taker, including the taker fee.
+3. **Venue to destination.** The reverse of step 1. Coinbase withdraws directly if it sends the coin on the end chain. Otherwise it withdraws to a Coinbase network and bridges from there.
+
+**What each bridge step does:**
+- **Quotes:** it asks Across, Relay and LayerZero (Stargate), and the one that delivers the most after gas wins. The other quotes and errors are listed under the route's steps.
+- **Gas:** each step you sign is costed in its chain's gas token: ETH on Ethereum, Base and Arbitrum, POL on Polygon, SOL on Solana, and a USD stablecoin on Tempo. It uses the chain's current gas price (`eth_gasPrice`), valued with Coinbase's ETH-USD, POL-USD and SOL-USD prices.
+- **Gas tokens needed:** the page lists, per route, which gas tokens on which chains you need. Steps Coinbase performs need none.
+
+**Coinbase rules, all in `config.yaml` under `routing.coinbase`:**
+- **USDC** deposits and withdrawals run directly on Ethereum, Solana, Base, Arbitrum and Polygon.
+- **EURC** runs directly on Ethereum, Solana and Base.
+- **Bridge hubs:** anything else bridges via one of `bridge_hubs` (Base, Arbitrum, Ethereum).
+- **Tempo USDC:** Coinbase now also lists Tempo as a USDC network. It's left out to match the requirement to bridge Tempo routes. Add `tempo` to `networks.USDC` to deposit and withdraw directly.
+- **Send fees:** Coinbase charges its estimate of the network fee on sends. That's estimated from live gas for a token transfer unless you set a fixed fee in `withdrawal_fees`. Deposits are free.
+
+**Taker fee:** `venue_params.coinbase.taker_fee_bps` is 0.45 bps. That's Coinbase Exchange's published stable-pair taker rate for standard users (EURC-USDC is a stable pair). Coinbase only shows the Advanced Trade retail stable-pair rate on your logged-in fee page (Advanced, then Fees, then Stablecoin pairs). Put your rate there. EURC-USDC is currently `limit_only` on Coinbase, so a real taker sends a marketable limit order. The cost is the same as the order-book walk.
+
+**Known gaps** (the page says so per route instead of guessing):
+- Circle doesn't issue EURC on Arbitrum or Polygon, so those chains can't be picked for EURC.
+- Across and Relay don't list EURC routes, and LayerZero's API doesn't support EURC.e on Tempo. Any EURC route that needs a bridge therefore shows as "couldn't be priced". That covers Tempo EURC, and EURC between Base, Ethereum and Solana. To have a bridge asked about EURC, add EURC to its `tokens` under `routing.bridges`.
+- On Tempo, EURC.e can't pay fees. You need some USDC.e or pathUSD there for gas.
+- Gas amounts per step are typical figures (`routing.gas_units`). Uniswap, 0x and Relay give their own figures, which are used instead.
+
+**Keys, set in Vercel's environment variables:**
+- `RELAY_API_KEY` (from dashboard.relay.link): Relay requires one from 2 October 2026.
+- `LAYERZERO_API_KEY`: needed for LayerZero quotes. Without it, LayerZero shows "set LAYERZERO_API_KEY" and the other bridges are used.
+- `ACROSS_API_KEY`: optional.
+- RPC URLs: optional `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `POLYGON_RPC_URL`, `TEMPO_RPC_URL` and `BASE_RPC_URL`. Without them, the public RPCs listed in `config.yaml` are used.
+
 ### Hidden quotes: the 2% band
 
 Quotes priced more than 2% above or below the latest market price are left out of the page's table, chart and "best" picks, and listed under a "hidden" note instead. They usually come from pools too thin for the size requested. The check runs fresh on every request, so a venue reappears as soon as its price is back within 2%. The API returns hidden quotes in `excluded`, with `offset_pct` showing how far off they were. Change the threshold with `quality.max_distance_from_mid_pct` in `config.yaml`. The scheduled run still stores every quote, so the history includes outliers.
@@ -179,6 +226,8 @@ To deploy:
 2. Under **Project → Settings → Environment Variables**, set:
    - `BASE_RPC_URL`: your Base RPC provider URL
    - `ZEROX_API_KEY`: from dashboard.0x.org
+   - `RELAY_API_KEY`, `LAYERZERO_API_KEY` (and optionally `ACROSS_API_KEY`): bridge quotes for routes (see "Routes")
+   - `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `POLYGON_RPC_URL`, `TEMPO_RPC_URL`: optional provider RPCs for gas prices and Ethereum quotes
    - `COINBASE_API_KEY` and `COINBASE_API_SECRET`: optional, a Coinbase Developer Platform key with view access (see "Coinbase order book")
    - `CRON_SECRET`: a random string of 16+ characters
    - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`: from a Turso database

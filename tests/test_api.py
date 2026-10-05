@@ -97,3 +97,22 @@ def test_tradingview_webhook_route(client, monkeypatch):
     monkeypatch.setattr(service, "handle_tradingview_webhook", reject)
     r = client.post("/api/tradingview/webhook", content=b"{}")
     assert r.status_code == 403 and r.json() == {"detail": "nope"}
+
+
+def test_route_rejects_bad_input(client):
+    assert client.post("/api/route", json={"from_token": "EURC", "from_chain": "arbitrum"}).status_code == 400
+    assert client.post("/api/route", json={"from_token": "USDC", "to_token": "USDC"}).status_code == 400
+    assert client.post("/api/route", json={"amount": 10**12}).status_code == 400
+
+
+def test_route_calls_guarded_service(client, monkeypatch):
+    seen = {}
+
+    def fake(params, client_key, **kw):
+        seen["params"] = params.as_dict()
+        return {"routes": [], "cached": False}
+
+    monkeypatch.setattr(service, "guarded_route", fake)
+    body = {"from_token": "USDC", "from_chain": "tempo", "to_token": "EURC", "to_chain": "solana", "amount": 2500}
+    r = client.post("/api/route", json=body)
+    assert r.status_code == 200 and seen["params"]["from_chain"] == "tempo" and seen["params"]["amount"] == 2500

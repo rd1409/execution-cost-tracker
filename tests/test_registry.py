@@ -124,3 +124,81 @@ def test_market_mid_settings():
 def test_invalid_market_mid_settings(mm, match):
     with pytest.raises(RegistryError, match=match):
         registry.parse({**VALID, "market_mid": mm})
+
+
+# --- chains beyond EVM, and routing -------------------------------------------------
+
+
+SOL = {
+    "name": "Solana",
+    "kind": "solana",
+    "gas_token": "SOL",
+    "gas_price_product": "SOL-USD",
+    "bridge_ids": {"relay": 792703809},
+    "tokens": {"USDC": {"address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "decimals": 6}},
+}
+
+ROUTING = {
+    "coinbase": {"networks": {"USDC": ["base", "solana"], "EURC": ["base"]}, "bridge_hubs": ["base"],
+                 "withdrawal_fees": {"USDC": {"base": 0}}},
+    "bridges": {"across": {"tokens": ["USDC"], "chains": ["base", "solana"]}},
+    "gas_units": {"swap": 200000},
+    "solana_fee_lamports": 7000,
+    "quote_wallets": {"evm": "0x" + "a" * 40, "solana": "So11111111111111111111111111111111111111112"},
+}
+
+
+def with_solana(**routing):
+    raw = copy.deepcopy(VALID)
+    raw["chains"]["solana"] = copy.deepcopy(SOL)
+    raw["routing"] = {**copy.deepcopy(ROUTING), **routing}
+    return raw
+
+
+def test_shipped_config_has_six_chains_and_routing():
+    reg = registry.load()
+    assert list(reg.chains) == ["ethereum", "solana", "base", "arbitrum", "polygon", "tempo"]
+    assert reg.chains["solana"].chain_id is None and reg.chains["solana"].bridge_id("across") == 34268394551451
+    assert reg.chains["tempo"].tokens["EURC"].display == "EURC.e" and reg.chains["tempo"].gas_token_usd == 1
+    assert "EURC" not in reg.chains["arbitrum"].tokens and "EURC" not in reg.chains["polygon"].tokens
+    assert reg.chains["polygon"].bridge_id("layerzero") == "polygon" and reg.chains["base"].bridge_id("relay") == 8453
+    assert reg.trade_pair("USDC", "EURC", "ethereum").name == "EURC/USDC"
+    assert reg.stablecoins() == ["USDC", "EURC"]
+
+
+def test_parse_routing_section():
+    reg = registry.parse(with_solana())
+    r = reg.routing
+    assert r.coinbase_accepts("USDC", "solana") and not r.coinbase_accepts("EURC", "solana")
+    assert r.coinbase_withdrawal_fees == {"USDC": {"base": 0}} and r.coinbase_hubs == ("base",)
+    assert r.bridge_covers("across", "USDC", "base", "solana") and not r.bridge_covers("relay", "USDC", "base", "solana")
+    assert r.gas_units["swap"] == 200000 and r.gas_units["transfer"] == 65000 and r.solana_fee_lamports == 7000
+    assert reg.chains["solana"].tokens["USDC"].address.startswith("EPjF")
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (lambda r: r["chains"]["solana"].update(kind="cosmos"), "kind"),
+        (lambda r: r["chains"]["solana"]["tokens"]["USDC"].update(address="0x123"), "invalid address"),
+        (lambda r: r["chains"]["base"].update(gas_token_usd=-1), "gas_token_usd"),
+        (lambda r: r["chains"]["base"].update(gas_price_product="eth"), "gas_price_product"),
+        (lambda r: r["chains"]["base"].update(bridge_ids={"wormhole": 1}), "bridge_ids"),
+        (lambda r: r["pairs"][0].update(chains=["solana"]), "EVM only"),
+        (lambda r: r["routing"]["coinbase"]["networks"].update(EURC=["solana"]), "EURC isn't listed on solana"),
+        (lambda r: r["routing"]["coinbase"]["networks"].update(USDC=["mars"]), "unknown chain"),
+        (lambda r: r["routing"]["coinbase"].update(bridge_hubs="base"), "list of chain names"),
+        (lambda r: r["routing"]["coinbase"].update(withdrawal_fees={"USDC": {"base": -1}}), "non-negative"),
+        (lambda r: r["routing"]["bridges"].update(wormhole={}), "unknown provider"),
+        (lambda r: r["routing"]["bridges"]["across"].update(tokens=["DAI"]), "unknown token"),
+        (lambda r: r["routing"].update(gas_units={"swap": 0}), "gas_units.swap"),
+        (lambda r: r["routing"].update(gas_units={"teleport": 5}), "gas_units.teleport"),
+        (lambda r: r["routing"].update(solana_fee_lamports=-5), "solana_fee_lamports"),
+        (lambda r: r["routing"].update(quote_wallets={"evm": "nope"}), "quote_wallets.evm"),
+    ],
+)
+def test_invalid_routing_is_rejected(mutate, match):
+    raw = with_solana()
+    mutate(raw)
+    with pytest.raises(RegistryError, match=match):
+        registry.parse(raw)

@@ -152,11 +152,20 @@ class CostSummary:
 
 @dataclass(frozen=True)
 class Token:
-    """An ERC-20 token on a specific chain."""
+    """A token on a specific chain (ERC-20/TIP-20 address or Solana mint).
+
+    ``label`` is how the chain itself names it when that differs from
+    ``symbol``, e.g. "USDC.e" for bridged USDC on Tempo.
+    """
 
     symbol: str
     address: str
     decimals: int
+    label: str = ""
+
+    @property
+    def display(self) -> str:
+        return self.label or self.symbol
 
     def to_raw(self, amount: float) -> int:
         """Human units to integer base units."""
