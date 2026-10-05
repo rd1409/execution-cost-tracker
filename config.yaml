@@ -41,7 +41,7 @@ guardrails:
   cache_seconds: 15           # identical requests within this window reuse the answer
 
 quality:
-  # Quotes priced more than this percent above or below the reference rate are
+  # Quotes priced more than this percent above or below the latest TradingView price are
   # left out of the quote page's results (and its "best" picks). Checked fresh
   # on every request, so a venue that comes back inside the band reappears.
   max_distance_from_mid_pct: 2

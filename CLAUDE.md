@@ -7,7 +7,7 @@ Guidance for Claude when working in this repository.
 Execution Cost Tracker is a Python package with two parts:
 
 1. **Trade cost tracking.** It records trade executions and measures their costs: commissions, fees, and slippage against a benchmark price (arrival mid, decision price, VWAP, etc.).
-2. **FX tracking.** It quotes tokenised FX pairs (EURC/USDC on Base) from on-chain venues and an aggregator. It then scores each quote against a traditional FX reference mid and stores the results in SQLite or Turso. A public page lets users price a trade on demand, and a daily scheduled run builds history.
+2. **FX tracking.** It quotes tokenised FX pairs (EURC/USDC on Base) from on-chain venues and an aggregator. It then scores each quote against a traditional FX reference mid and stores the results in SQLite or Turso. The market mid comes only from TradingView (webhook). A public page lets users price a trade on demand, and a daily scheduled run builds history.
 
 ## Layout
 
@@ -34,7 +34,7 @@ src/execution_cost_tracker/
         uniswap_v4.py   # V4Quoter across candidate pool keys
         aerodrome.py    # Slipstream quoter + classic router
         zerox.py        # 0x Swap API /swap/permit2/price (ZEROX_API_KEY)
-    reference.py     # ReferenceSource protocol; Frankfurter (ECB daily) and Static sources
+    reference.py     # ReferenceSource protocol; StoredMidReference (latest TradingView price) and StaticReference
     metrics.py       # spread/bps math: pure functions, no network or I/O
     storage.py       # Turso (TURSO_DATABASE_URL) or local SQLite: reference_rates, quotes, failures, market_mids
     run.py           # one cycle: fetch all -> compute -> store -> print; CLI entry point
@@ -79,7 +79,7 @@ Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL
 - **Front end:** `public/index.html` is one self-contained file that builds its form from `/api/config` and never holds keys. It calls only this app's `/api/...` endpoints. Keep it working with `side` = buy, sell or both, and with any number of venues.
 - **Guardrails:** every public quote goes through `service.guarded_quote`, which checks the cache, then the per-client limit, then the global limit. Network calls happen outside the lock. Only results with at least one quote are cached.
 - **Quote band:** `service.quote` drops quotes priced more than `quality.max_distance_from_mid_pct` (config.yaml, default 2%) from the reference rate. They go into `excluded` and are left out of `quotes`, `rows` and `best`. The check is stateless and runs on every request, so a venue comes back as soon as it's inside the band. Never persist exclusions. The scheduled run stores every quote unfiltered, so history keeps the outliers.
-- **Market mid:** the page's "vs mkt mid" column uses the latest TradingView price stored by `/api/tradingview/webhook` (`market_mids` table). It is only valid while `market_hours.is_open(now)` holds and the price is younger than `market_mid.max_age_seconds`. Otherwise `vs_market_mid_bps` is `None` (shown as N/A) and `market_mid.reason` says why. TradingView has no data API; never scrape it. Alert messages have no `{{bid}}`/`{{ask}}` placeholders; bid and ask come from the Pine script in `tradingview/` (1T chart only), and the webhook stores their average plus both values. The webhook rejects bodies with unfilled `{{...}}` placeholders with an explanatory 400. Columns added to existing tables go in `storage._ADDED_COLUMNS` so `connect()` migrates old databases. The ECB daily reference stays the basis for the 2% band and stored `deviation_bps`. Market-hours code takes `now` as a parameter and never reads the clock itself.
+- **Market mid:** the page's "vs mkt mid" column uses the latest TradingView price stored by `/api/tradingview/webhook` (`market_mids` table). It is only valid while `market_hours.is_open(now)` holds and the price is younger than `market_mid.max_age_seconds`. Otherwise `vs_market_mid_bps` is `None` (shown as N/A) and `market_mid.reason` says why. TradingView has no data API; never scrape it. Alert messages have no `{{bid}}`/`{{ask}}` placeholders; bid and ask come from the Pine script in `tradingview/` (1T chart only), and the webhook stores their average plus both values. The webhook rejects bodies with unfilled `{{...}}` placeholders with an explanatory 400. Columns added to existing tables go in `storage._ADDED_COLUMNS` so `connect()` migrates old databases. The reference for sizing buys, the 2% band and stored `deviation_bps` is the latest stored TradingView price of any age (`reference.StoredMidReference`); if none exists, `run.venue_implied_reference` uses the median venue sell price. There is no ECB/Frankfurter source; don't reintroduce one. Market-hours code takes `now` as a parameter and never reads the clock itself.
 - **Cross-chain:** `QuoteParams` accepts `source_chain`/`destination_chain` but rejects different values until bridge routes exist.
 - **API layering:** keep `api.py` to HTTP mapping only. Validation and logic go in `service.py`, which must not import FastAPI so it stays testable offline.
 - The `/api/cron` endpoint must stay closed unless `CRON_SECRET` is set and matches. Public inputs are validated against known pairs and venues and capped by `MAX_NOTIONAL`.

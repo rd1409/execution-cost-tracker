@@ -10,6 +10,7 @@ Environment:
 from __future__ import annotations
 
 import argparse
+import statistics
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -18,7 +19,7 @@ from typing import Iterable, Sequence, TextIO
 
 from . import metrics, registry, storage
 from .models import Pair, Quote, ReferenceRate, Side
-from .reference import FrankfurterReference, ReferenceSource
+from .reference import ReferenceSource, StoredMidReference
 from .venues import VENUES, Venue
 
 BOTH_SIDES = (Side.SELL, Side.BUY)
@@ -108,8 +109,11 @@ def run_cycle(
         try:
             ref = reference.mid(pair.reference)
         except Exception as e:
-            result.failures.append(Failure(pair.name, pair.chain, "reference", "-", 0.0, _err(e)))
-            continue
+            ref = venue_implied_reference(pair, venues, min(sizes))
+            if ref is None:
+                msg = f"{_err(e)}; and no venue returned a price to estimate one from"
+                result.failures.append(Failure(pair.name, pair.chain, "reference", "-", 0.0, msg[:300]))
+                continue
         result.references[pair.name] = ref
 
         for venue in venues:
@@ -127,6 +131,24 @@ def run_cycle(
     if conn is not None:
         store(conn, result)
     return result
+
+
+def venue_implied_reference(pair: Pair, venues: Sequence[Venue], size: float) -> ReferenceRate | None:
+    """A stand-in mid when no market price exists: the median price at which
+    the venues would buy ``size`` base from you. It's a bid, so it sits about
+    half a spread below the true mid; good enough to size buy quotes and
+    filter outliers, and only used until a TradingView price arrives."""
+    prices = []
+    for venue in venues:
+        if not venue.supports(pair):
+            continue
+        try:
+            prices.append(venue.quote(pair, Side.SELL, size, 1.0).price)  # mid_hint unused for sells
+        except Exception:
+            continue
+    if not prices:
+        return None
+    return ReferenceRate(pair=pair.reference, mid=statistics.median(prices), source="venue_implied")
 
 
 def store(conn: storage.Connection, result: CycleResult) -> None:
@@ -201,7 +223,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     venues = build_venues(v.strip() for v in args.venues.split(",") if v.strip())
     conn = None if args.no_store else storage.connect(args.db)
     try:
-        result = run_cycle(default_pairs(), venues, FrankfurterReference(), sizes, conn)
+        result = run_cycle(default_pairs(), venues, StoredMidReference(), sizes, conn)
     finally:
         if conn is not None:
             conn.close()

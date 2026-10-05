@@ -194,13 +194,30 @@ def test_cron_cycle_reports_errors(tmp_path):
 
 
 def test_cron_cycle_reports_reference_failure(tmp_path):
+    class Broken(Venue):
+        name = "broken"
+
+        def simulate(self, pair, token_in, token_out, amount_in):
+            raise RuntimeError("pool reverted")
+
     out = service.cron_cycle(
         connect=lambda: storage.connect(tmp_path / "fx.db"),
         reference=StaticReference({}),
-        venues=[FakeVenue()],
+        venues=[Broken()],
     )
     assert out["quotes"] == 0 and out["references"] == {}
-    assert len(out["errors"]) == 1 and out["errors"][0].startswith("EURC/USDC reference: KeyError")
+    assert any(e.startswith("EURC/USDC reference: NoReferenceError") for e in out["errors"])
+
+
+def test_cron_cycle_uses_stored_tradingview_price(tmp_path):
+    from datetime import datetime, timezone
+
+    path = tmp_path / "fx.db"
+    conn = storage.connect(path)
+    storage.save_market_mid(conn, "EUR/USD", 1.0852, "tradingview", datetime(2026, 10, 2, 20, 59, tzinfo=timezone.utc))
+    conn.close()
+    out = service.cron_cycle(connect=lambda: storage.connect(path), venues=[FakeVenue()], sizes=[1000])
+    assert out["references"] == {"EURC/USDC": 1.0852} and out["quotes"] == 2
 
 
 # --- outgoing HTTP ---------------------------------------------------------
@@ -218,38 +235,6 @@ class FakeResponse:
 
     def __exit__(self, *a):
         return False
-
-
-def test_reference_request_sets_user_agent(monkeypatch):
-    import urllib.request
-
-    from execution_cost_tracker import reference
-
-    seen = {}
-
-    def fake_urlopen(req, timeout=None):
-        seen["ua"] = req.get_header("User-agent")
-        return FakeResponse(b'{"date": "2026-10-02", "rates": {"USD": 1.1}}')
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    rate = reference.FrankfurterReference().mid("EUR/USD")
-    assert rate.mid == 1.1
-    assert seen["ua"] == reference.USER_AGENT and "Python-urllib" not in seen["ua"]
-
-
-def test_reference_http_error_is_readable(monkeypatch):
-    import io
-    import urllib.error
-    import urllib.request
-
-    from execution_cost_tracker import reference
-
-    def fake_urlopen(req, timeout=None):
-        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(b"blocked"))
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    with pytest.raises(RuntimeError, match="403.*blocked"):
-        reference.FrankfurterReference().mid("EUR/USD")
 
 
 def test_zerox_request_sets_user_agent_and_keeps_headers(monkeypatch):

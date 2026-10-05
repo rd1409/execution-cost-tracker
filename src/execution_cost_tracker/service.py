@@ -20,7 +20,7 @@ from typing import Callable, Iterable, Sequence
 from . import market_hours, metrics, registry, storage
 from .guardrails import RateLimited, SlidingWindowLimiter, TTLCache
 from .models import Pair, Side
-from .reference import FrankfurterReference, ReferenceSource
+from .reference import ReferenceSource, StoredMidReference
 from .registry import Registry
 from .run import CycleResult, build_venues, default_pairs, default_sizes, run_cycle
 from .venues import VENUES, Venue
@@ -237,10 +237,13 @@ def quote(
     ``rows`` and ``best``. Nothing is remembered between requests, so a venue
     that comes back inside the band is included again next time.
     """
+    # One database read serves both the reference (any age) and the market-mid
+    # status (FX hours + freshness).
+    lookup = _read_once(mid_lookup or stored_mid_lookup)
     result = run_cycle(
         [params.pair_obj],
         venue_factory(params.venues),
-        reference or FrankfurterReference(),
+        reference or StoredMidReference(lookup),
         [params.notional],
         sides=params.sides,
     )
@@ -255,7 +258,7 @@ def quote(
     ]
 
     # Compare with the live market mid during FX hours; None (N/A) otherwise.
-    mm = market_mid_status(params.pair_obj.reference, now or datetime.now(timezone.utc), mid_lookup, params.registry)
+    mm = market_mid_status(params.pair_obj.reference, now or datetime.now(timezone.utc), lookup, params.registry)
     out["market_mid"] = mm
     for q in out["quotes"] + list(out["best"].values()):
         q["vs_market_mid_bps"] = (
@@ -265,6 +268,24 @@ def quote(
 
 
 # --- live market mid -------------------------------------------------------------
+
+
+def _read_once(lookup: MidLookup) -> MidLookup:
+    """Wrap a lookup so each pair is read at most once (errors included)."""
+    seen: dict[str, tuple] = {}
+
+    def wrapped(pair: str):
+        if pair not in seen:
+            try:
+                seen[pair] = (lookup(pair), None)
+            except Exception as e:
+                seen[pair] = (None, e)
+        row, err = seen[pair]
+        if err is not None:
+            raise err
+        return row
+
+    return wrapped
 
 
 def stored_mid_lookup(pair: str) -> dict | None:
@@ -540,7 +561,7 @@ def cron_cycle(
         result = run_cycle(
             pairs if pairs is not None else default_pairs(),
             venues if venues is not None else build_venues(VENUES),
-            reference or FrankfurterReference(),
+            reference or StoredMidReference(lambda pair: storage.latest_market_mid(conn, pair)),
             sizes if sizes is not None else default_sizes(),
             conn,
         )

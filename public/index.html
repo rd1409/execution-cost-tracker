@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FX Execution Check</title>
-<meta name="description" content="Price a tokenised FX trade across on-chain venues and see what it costs against the reference rate.">
+<meta name="description" content="Price a tokenised FX trade across on-chain venues and see what it costs against the live interbank mid.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..700&display=swap" rel="stylesheet">
@@ -200,7 +200,7 @@ tr.is-best td { background: var(--best-bg); }
 <div class="wrap">
   <header class="page">
     <h1>FX execution check</h1>
-    <p>Price a tokenised FX trade across on-chain venues and see what each fill costs against the traditional reference rate.</p>
+    <p>Price a tokenised FX trade across on-chain venues and see what each fill costs against the live interbank EUR/USD mid.</p>
   </header>
 
   <div class="layout">
@@ -413,7 +413,7 @@ tr.is-best td { background: var(--best-bg); }
       render(x.body);
       var n = x.body.quotes.length, hidden = (x.body.excluded || []).length;
       status(n ? (x.body.cached ? "Showing a result from " + x.body.cache_age_seconds + "s ago for the same request." : "")
-               : hidden ? "Every quote was more than " + x.body.band_pct + "% from the reference rate, so none are shown. Details below."
+               : hidden ? "Every quote was more than " + x.body.band_pct + "% from the latest market price, so none are shown. Details below."
                         : "No venue returned a quote. Details below.", !n);
     }).catch(function (e) {
       status(e.message || "Couldn't reach the server.", true);
@@ -436,9 +436,8 @@ tr.is-best td { background: var(--best-bg); }
         (mm.bid != null && mm.ask != null
           ? '<br>average of bid ' + mm.bid.toFixed(5) + ' and ask ' + mm.ask.toFixed(5) : "") + "</span></div>";
     } else if (ref) {
-      html += '<div class="refline"><span class="rate">' + mid.toFixed(4) + '</span>' +
-        '<span class="what"><b>' + esc(ref.pair) + '</b> ECB reference rate' +
-        (ref.as_of ? ", fix of " + esc(ref.as_of) : "") + "</span></div>";
+      html += '<div class="refline"><span class="rate">' + mid.toFixed(5) + '</span>' +
+        '<span class="what"><b>' + esc(ref.pair) + '</b> ' + refLabel(ref) + "</span></div>";
     }
     html += '<p class="mktline">' + marketLine(mm, ref) + "</p>";
 
@@ -465,12 +464,12 @@ tr.is-best td { background: var(--best-bg); }
       html += '<details class="fails"' + (res.quotes.length ? "" : " open") + "><summary>" +
         res.failures.length + " attempt" + (res.failures.length > 1 ? "s" : "") + " failed</summary><ul>" +
         res.failures.map(function (f) {
-          return "<li><b>" + esc(f.venue === "reference" ? "Reference rate" : venueLabel(f.venue)) + "</b>" +
+          return "<li><b>" + esc(f.venue === "reference" ? "Market price" : venueLabel(f.venue)) + "</b>" +
             (f.side && f.side !== "-" ? " (" + esc(f.side) + ")" : "") + ": " + esc(f.error) + "</li>";
         }).join("") + "</ul></details>";
     }
 
-    html += '<p class="foot">"vs mkt mid" compares each price with the live EUR/USD mid from TradingView while the FX market is open (Monday 05:00 Sydney to Friday 17:00 New York); positive means worse than mid. Outside those hours it shows N/A. Quotes more than ' + res.band_pct + '% from the ECB daily reference rate are hidden. Gas isn\'t included. ' +
+    html += '<p class="foot">"vs mkt mid" compares each price with the live EUR/USD mid from TradingView while the FX market is open (Monday 05:00 Sydney to Friday 17:00 New York); positive means worse than mid. Outside those hours it shows N/A. Quotes more than ' + res.band_pct + '% from the latest market price are hidden. Gas isn\'t included. ' +
       (res.cached ? "This result was cached; identical requests within a few seconds reuse it." : "") + "</p>";
 
     $("out").innerHTML = html;
@@ -487,6 +486,12 @@ tr.is-best td { background: var(--best-bg); }
     return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
   }
 
+  function refLabel(ref) {
+    if (ref.source === "venue_implied") return "estimated from venue prices (no TradingView price received yet)";
+    if (ref.source === "tradingview") return "last TradingView price" + (ref.as_of ? ", " + esc(whenLocal(ref.as_of)) + " your time" : "");
+    return esc(ref.source) + " price";
+  }
+
   function naReason(mm) {
     if (!mm || mm.market_open === false) return "FX market closed";
     return mm.reason || "no market mid";
@@ -495,8 +500,7 @@ tr.is-best td { background: var(--best-bg); }
   function marketLine(mm, ref) {
     if (!mm || mm.market_open == null) return "";
     if (mm.available) {
-      return "FX market open until " + esc(whenLocal(mm.next_change)) + " your time." +
-        (ref ? " ECB reference " + ref.mid.toFixed(4) + (ref.as_of ? " (fix of " + esc(ref.as_of) + ")" : "") + "." : "");
+      return "FX market open until " + esc(whenLocal(mm.next_change)) + " your time.";
     }
     if (!mm.market_open) {
       return "FX market closed. It reopens " + esc(whenLocal(mm.next_change)) + " your time (Monday 05:00 Sydney); until then market-mid comparisons show N/A.";
@@ -507,12 +511,12 @@ tr.is-best td { background: var(--best-bg); }
   function hiddenNote(res, pairCfg) {
     var ex = res.excluded.slice().sort(function (a, b) { return Math.abs(b.offset_pct) - Math.abs(a.offset_pct); });
     return '<details class="hidden-q"' + (res.quotes.length ? "" : " open") + "><summary>" + ex.length +
-      " quote" + (ex.length > 1 ? "s" : "") + " hidden: priced more than " + res.band_pct + "% from the reference rate</summary>" +
+      " quote" + (ex.length > 1 ? "s" : "") + " hidden: priced more than " + res.band_pct + "% from the market price</summary>" +
       "<p>Usually a pool with too little liquidity for this size. They're checked again on every request and come back once they're within " +
       res.band_pct + "%.</p><ul>" +
       ex.map(function (q) {
         return "<li><b>" + esc(venueLabel(q.venue)) + "</b> (" + (q.side === "buy" ? "buy" : "sell") + ") at " + fmt.price(q.price) +
-          ", " + (q.offset_pct > 0 ? "+" : "") + q.offset_pct.toFixed(2) + "% from reference</li>";
+          ", " + (q.offset_pct > 0 ? "+" : "") + q.offset_pct.toFixed(2) + "% from market price</li>";
       }).join("") + "</ul></details>";
   }
 
@@ -542,11 +546,11 @@ tr.is-best td { background: var(--best-bg); }
     }).join("");
 
     return '<div class="ladder"><h2>Where each venue fills</h2>' +
-      '<p class="sub">Distance from the reference rate in basis points. A tighter pair of marks means a cheaper round trip.</p>' +
+      '<p class="sub">Distance from the latest market price in basis points. A tighter pair of marks means a cheaper round trip.</p>' +
       rows +
       '<div class="axis"><span></span><div class="ticks"><span>−' + scale + '</span><span>−' + scale / 2 +
       '</span><span>0</span><span>+' + scale / 2 + '</span><span>+' + scale + '</span></div></div>' +
-      '<div class="legend"><span><i class="sell"></i>Sell price</span><span><i class="buy"></i>Buy price</span><span><i class="mid"></i>Reference rate</span></div></div>';
+      '<div class="legend"><span><i class="sell"></i>Sell price</span><span><i class="buy"></i>Buy price</span><span><i class="mid"></i>Market price</span></div></div>';
   }
 
   function table(res, mid, pairCfg) {

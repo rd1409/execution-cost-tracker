@@ -65,7 +65,7 @@ Each cycle prints the following for every venue and size:
 
 Failed venues are listed with their errors and never stop the cycle. Everything is written to `fxtracker.db`; pass `--no-store` to skip writing.
 
-The reference mid comes from the ECB rates on [Frankfurter](https://frankfurter.dev). These update once per working day, so treat the comparison against mid as approximate during the trading day. To use a live feed instead, implement `reference.ReferenceSource`.
+The reference price is the latest EUR/USD price received from TradingView (see "Market mid from TradingView" below). It's used to size buy quotes, hide outliers, and centre the chart. Over a weekend that's Friday's last price. Until TradingView has sent anything, the app estimates a mid from the venues' own prices.
 
 ## Web API and Vercel
 
@@ -137,12 +137,12 @@ Notes:
 - The webhook accepts either `"price"` or `"bid"` plus `"ask"`; with bid and ask it stores their average as the mid and keeps both for display.
 - Option B only: to see what your chart's price is, turn on Bid and Ask lines in Chart settings. If the price sits on the bid line it's a bid; if it's halfway between the lines it's a mid. A bid instead of a mid puts "vs mkt mid" roughly 0.1–0.5 bps off on EUR/USD.
 - The Pine script hasn't been tested on a live TradingView account yet. If TradingView reports an error when you save or add it, note the message and line number; the script is short and its comments explain each part.
-- The ECB daily reference rate is still used for the 2% hidden-quotes filter, and is shown when no market mid is available.
+- Outside FX hours, the latest TradingView price (e.g. Friday's close) is still used behind the scenes to size buy quotes and for the 2% hidden-quotes filter, and the page shows it as "last TradingView price".
 - Settings live under `market_mid` in `config.yaml`: how old a price can be, which TradingView ticker maps to which pair, and the IP allowlist.
 
 ### Hidden quotes: the 2% band
 
-Quotes priced more than 2% above or below the reference rate are left out of the page's table, chart and "best" picks, and listed under a "hidden" note instead. They usually come from pools too thin for the size requested. The check runs fresh on every request, so a venue reappears as soon as its price is back within 2%. The API returns hidden quotes in `excluded`, with `offset_pct` showing how far off they were. Change the threshold with `quality.max_distance_from_mid_pct` in `config.yaml`. The scheduled run still stores every quote, so the history includes outliers.
+Quotes priced more than 2% above or below the latest market price are left out of the page's table, chart and "best" picks, and listed under a "hidden" note instead. They usually come from pools too thin for the size requested. The check runs fresh on every request, so a venue reappears as soon as its price is back within 2%. The API returns hidden quotes in `excluded`, with `offset_pct` showing how far off they were. Change the threshold with `quality.max_distance_from_mid_pct` in `config.yaml`. The scheduled run still stores every quote, so the history includes outliers.
 
 ### Guardrails on `/api/quote`
 

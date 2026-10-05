@@ -1,31 +1,36 @@
-"""Traditional FX reference mid rates.
+"""Reference mid rates used to size buy quotes, filter outliers and centre the chart.
 
-The default source is Frankfurter (European Central Bank reference rates):
-free and keyless, but published once per working day around 16:00 CET, so
-intraday comparisons carry that staleness. Swap in a live source by
-implementing :class:`ReferenceSource`.
+The source is the latest market mid stored from TradingView (see the
+``/api/tradingview/webhook`` endpoint), whatever its age: over a weekend that's
+Friday's last price, which is still a good anchor. The page's "vs mkt mid"
+column applies stricter rules (FX hours and freshness) on top of this; see
+``service.market_mid_status``.
+
+If no TradingView price has ever been stored, ``run.run_cycle`` falls back to a
+mid implied by the venues' own prices.
 """
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.parse
-import urllib.request
+from datetime import datetime
 from typing import Callable, Protocol
 
 from .models import ReferenceRate
-
-FRANKFURTER_URL = "https://api.frankfurter.dev/v1/latest"
 
 # Python's default "Python-urllib/x.y" user agent is blocked by many sites,
 # so identify the app explicitly on every outgoing request.
 USER_AGENT = "execution-cost-tracker/0.3 (+https://github.com/rd1409/execution-cost-tracker)"
 
+MidLookup = Callable[[str], "dict | None"]
+
 
 class ReferenceSource(Protocol):
     def mid(self, pair: str) -> ReferenceRate:
         """Mid rate for a pair written as "BASE/QUOTE", e.g. "EUR/USD"."""
+
+
+class NoReferenceError(LookupError):
+    """No reference price is available for a pair."""
 
 
 def split_pair(pair: str) -> tuple[str, str]:
@@ -35,21 +40,38 @@ def split_pair(pair: str) -> tuple[str, str]:
     return base, quote
 
 
-class FrankfurterReference:
-    """ECB reference rates via api.frankfurter.dev."""
+def _stored_lookup(pair: str) -> dict | None:
+    from . import storage  # imported here so tests and the CLI don't need a database
 
-    def __init__(self, http_get: Callable[[str], dict] | None = None) -> None:
-        self._http_get = http_get or _http_get
+    conn = storage.connect()
+    try:
+        return storage.latest_market_mid(conn, pair)
+    finally:
+        conn.close()
+
+
+class StoredMidReference:
+    """The most recent TradingView market mid in the database, of any age."""
+
+    def __init__(self, lookup: MidLookup | None = None) -> None:
+        self._lookup = lookup or _stored_lookup
 
     def mid(self, pair: str) -> ReferenceRate:
         base, quote = split_pair(pair)
-        url = f"{FRANKFURTER_URL}?{urllib.parse.urlencode({'base': base, 'symbols': quote})}"
-        data = self._http_get(url)
-        try:
-            rate = float(data["rates"][quote])
-        except (KeyError, TypeError, ValueError) as e:
-            raise ValueError(f"Frankfurter: no {pair} rate in {str(data)[:200]}") from e
-        return ReferenceRate(pair=f"{base}/{quote}", mid=rate, source="frankfurter-ecb", as_of=data.get("date"))
+        key = f"{base}/{quote}"
+        row = self._lookup(key)
+        if not row:
+            raise NoReferenceError(f"no TradingView price for {key} has been received yet")
+        received = row["received_at"]
+        if isinstance(received, str):
+            received = datetime.fromisoformat(received)
+        return ReferenceRate(
+            pair=key,
+            mid=float(row["mid"]),
+            source=str(row.get("source") or "tradingview"),
+            timestamp=received,
+            as_of=received.isoformat(),
+        )
 
 
 class StaticReference:
@@ -67,14 +89,4 @@ class StaticReference:
         inverse = f"{quote}/{base}"
         if inverse in self._mids:
             return ReferenceRate(pair=key, mid=1 / self._mids[inverse], source=self._source)
-        raise KeyError(f"no static rate for {key}")
-
-
-def _http_get(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.load(resp)
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="replace")[:200]
-        raise RuntimeError(f"reference HTTP {e.code} from {url}: {body}") from e
+        raise NoReferenceError(f"no static rate for {key}")

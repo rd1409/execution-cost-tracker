@@ -167,7 +167,7 @@ def test_quotes_show_na_when_closed_or_stale():
     assert closed["market_mid"]["reason"] == "FX market closed"
     stale = run_quote(WED, lambda p: row(1.1231, WED - timedelta(hours=1)))
     assert all(q["vs_market_mid_bps"] is None for q in stale["quotes"])
-    # the ECB reference still drives the 2% band and the stored deviation
+    # the stored reference price still drives the 2% band and the stored deviation
     assert all(q["deviation_bps"] is not None for q in stale["quotes"])
 
 
@@ -234,3 +234,24 @@ def test_old_market_mids_table_is_migrated(tmp_path):
     assert (row["mid"], row["bid"], row["ask"]) == (1.1231, 1.123, 1.1232)
     conn.close()
     storage.connect(path).close()  # running the migration again is harmless
+
+
+def test_quote_uses_tradingview_price_as_reference_with_one_read():
+    calls = []
+
+    def lookup(pair):
+        calls.append(pair)
+        return row(1.1231, SAT - timedelta(hours=40))  # Friday's last price, read on Saturday
+
+    out = service.quote(
+        service.QuoteParams(notional=10_000, venues=["zerox"]),
+        venue_factory=lambda names: [Fake("zerox", 1.1228, 1.1234)],
+        mid_lookup=lookup,
+        now=SAT,
+    )
+    ref = out["references"]["EURC/USDC"]
+    assert ref["mid"] == 1.1231 and ref["source"] == "tradingview"
+    assert out["market_mid"]["reason"] == "FX market closed"  # column is N/A at the weekend...
+    assert all(q["vs_market_mid_bps"] is None for q in out["quotes"])
+    assert all(q["deviation_bps"] is not None for q in out["quotes"])  # ...but quotes still measured vs Friday's price
+    assert calls == ["EUR/USD"]

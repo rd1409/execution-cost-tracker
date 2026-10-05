@@ -5,7 +5,7 @@ import io
 import pytest
 
 from execution_cost_tracker import Pair, Side, Token, storage
-from execution_cost_tracker.reference import FrankfurterReference, StaticReference
+from execution_cost_tracker.reference import NoReferenceError, StaticReference, StoredMidReference
 from execution_cost_tracker.run import print_report, run_cycle
 from execution_cost_tracker.venues import SwapResult, Venue, VenueError, ZeroX
 from execution_cost_tracker.venues.base import best_of
@@ -64,16 +64,35 @@ def test_static_reference_handles_inverse():
     assert ref.mid("usd/eur").mid == pytest.approx(0.8)
 
 
-def test_frankfurter_parses_response():
-    seen = {}
+def test_stored_mid_reference_uses_latest_tradingview_price():
+    from datetime import datetime, timezone
 
-    def fake_get(url):
-        seen["url"] = url
-        return {"amount": 1.0, "base": "EUR", "date": "2026-09-30", "rates": {"USD": 1.0851}}
+    at = datetime(2026, 10, 2, 20, 59, tzinfo=timezone.utc)  # Friday's last price, used over the weekend
+    seen = []
 
-    rate = FrankfurterReference(http_get=fake_get).mid("EUR/USD")
-    assert rate.mid == 1.0851 and rate.as_of == "2026-09-30"
-    assert "base=EUR" in seen["url"] and "symbols=USD" in seen["url"]
+    def lookup(pair):
+        seen.append(pair)
+        return {"mid": 1.1231, "received_at": at, "source": "tradingview"}
+
+    rate = StoredMidReference(lookup).mid("eur/usd")
+    assert seen == ["EUR/USD"]
+    assert rate.mid == 1.1231 and rate.source == "tradingview" and rate.timestamp == at and rate.as_of == at.isoformat()
+    with pytest.raises(NoReferenceError, match="no TradingView price"):
+        StoredMidReference(lambda pair: None).mid("EUR/USD")
+
+
+def test_run_cycle_falls_back_to_venue_implied_mid():
+    venues = [FakeVenue("a", 1.0840, 1.0860), FakeVenue("b", 1.0846, 1.0852), FakeVenue("c", 1.0844, 1.0858)]
+    result = run_cycle([PAIR], venues, StoredMidReference(lambda pair: None), [1000])
+    ref = result.references["EURC/USDC"]
+    assert ref.source == "venue_implied" and ref.mid == pytest.approx(1.0844)  # median of the sell prices
+    assert len(result.rows) == 6 and not result.failures
+
+
+def test_run_cycle_reports_when_no_price_at_all():
+    result = run_cycle([PAIR], [BrokenVenue()], StoredMidReference(lambda pair: None), [1000])
+    assert result.rows == [] and result.failures[0].venue == "reference"
+    assert "no TradingView price" in result.failures[0].error and "no venue returned a price" in result.failures[0].error
 
 
 def test_zerox_parses_price_response():
@@ -131,9 +150,9 @@ def test_run_cycle_scores_stores_and_prints(tmp_path):
     assert "EURC/USDC" in text and "tight" in text and "broken x4" in text
 
 
-def test_run_cycle_reference_failure_skips_pair():
-    result = run_cycle([PAIR], [FakeVenue("v", 1, 1)], StaticReference({}), [1000])
-    assert result.rows == [] and result.failures[0].venue == "reference"
+def test_run_cycle_missing_reference_uses_venue_prices():
+    result = run_cycle([PAIR], [FakeVenue("v", 1.084, 1.086)], StaticReference({}), [1000])
+    assert result.references["EURC/USDC"].source == "venue_implied" and len(result.rows) == 2
 
 
 def test_run_cycle_single_side():
