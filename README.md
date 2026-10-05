@@ -47,12 +47,13 @@ tracker = ExecutionCostTracker.from_csv("executions.csv")
 
 ## FX tracker
 
-The package also tracks tokenised FX: it quotes EURC/USDC on Base from Uniswap v3, Uniswap v4, Aerodrome and the 0x aggregator. It then compares each quote with the EUR/USD reference mid and stores the results in SQLite.
+The package also tracks tokenised FX: it quotes EURC/USDC on Base from Uniswap v3, Uniswap v4, Aerodrome and the 0x aggregator, plus Coinbase's EURC-USDC order book. It then compares each quote with the EUR/USD reference mid and stores the results in SQLite.
 
 ```bash
 pip install -e ".[dev]"
 export BASE_RPC_URL=https://...      # optional; defaults to the public Base RPC
 export ZEROX_API_KEY=...             # optional; needed for the 0x venue
+export COINBASE_API_KEY=... COINBASE_API_SECRET=...   # optional; Coinbase book (public endpoint otherwise)
 python -m execution_cost_tracker.run --sizes 1000,10000,100000
 ```
 
@@ -140,6 +141,23 @@ Notes:
 - Outside FX hours, the latest TradingView price (e.g. Friday's close) is still used behind the scenes to size buy quotes and for the 2% hidden-quotes filter, and the page shows it as "last TradingView price".
 - Settings live under `market_mid` in `config.yaml`: how old a price can be, which TradingView ticker maps to which pair, and the IP allowlist.
 
+### Coinbase order book
+
+The `coinbase` venue prices a trade by walking Coinbase's EURC-USDC order book, as if you sent a market order:
+
+- **Sell N EURC:** take the best bid, fill as much as it holds, move to the next bid, and repeat until N EURC is filled. The price is the size-weighted average: total USDC received / N. For example, selling 1,000,000 EURC into bids of 300k @ 1.1230, 500k @ 1.1228 and 400k @ 1.1225 fills 300k + 500k + 200k, for an average of 1.12279.
+- **Buy:** the same walk up the asks, spending the USDC amount (size x mid), like the on-chain venues.
+
+If the book's depth can't fill the size, the venue reports a failure saying how much it could fill. The page's route tooltip shows how many levels were used; the API's `meta` also has the top-of-book price, the worst level hit and the slippage from top of book. The pure walk lives in `orderbook.py`.
+
+Settings under `venue_params.coinbase` for the pair in `config.yaml`:
+
+- `product_id`: the Coinbase product (`EURC-USDC`). If Coinbase rejects it, try `EURC-USD`.
+- `depth_limit`: how many levels to request (default 500). Raise it if large sizes run out of depth.
+- `taker_fee_bps`: your Coinbase taker fee, deducted from what you receive. It's 0 by default, so prices are before fees.
+
+With `COINBASE_API_KEY` and `COINBASE_API_SECRET` set, the book comes through Coinbase's SDK (`coinbase-advanced-py`). Without them it uses Coinbase's public product-book endpoint. A secret pasted on one line with literal `\n` is accepted.
+
 ### Hidden quotes: the 2% band
 
 Quotes priced more than 2% above or below the latest market price are left out of the page's table, chart and "best" picks, and listed under a "hidden" note instead. They usually come from pools too thin for the size requested. The check runs fresh on every request, so a venue reappears as soon as its price is back within 2%. The API returns hidden quotes in `excluded`, with `offset_pct` showing how far off they were. Change the threshold with `quality.max_distance_from_mid_pct` in `config.yaml`. The scheduled run still stores every quote, so the history includes outliers.
@@ -161,6 +179,7 @@ To deploy:
 2. Under **Project → Settings → Environment Variables**, set:
    - `BASE_RPC_URL`: your Base RPC provider URL
    - `ZEROX_API_KEY`: from dashboard.0x.org
+   - `COINBASE_API_KEY` and `COINBASE_API_SECRET`: optional, a Coinbase Developer Platform key with view access (see "Coinbase order book")
    - `CRON_SECRET`: a random string of 16+ characters
    - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`: from a Turso database
    - `MAX_NOTIONAL`: optional cap on quote size (default 1,000,000)

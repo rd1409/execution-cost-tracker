@@ -7,7 +7,7 @@ Guidance for Claude when working in this repository.
 Execution Cost Tracker is a Python package with two parts:
 
 1. **Trade cost tracking.** It records trade executions and measures their costs: commissions, fees, and slippage against a benchmark price (arrival mid, decision price, VWAP, etc.).
-2. **FX tracking.** It quotes tokenised FX pairs (EURC/USDC on Base) from on-chain venues and an aggregator. It then scores each quote against a traditional FX reference mid and stores the results in SQLite or Turso. The market mid comes only from TradingView (webhook). A public page lets users price a trade on demand, and a daily scheduled run builds history.
+2. **FX tracking.** It quotes tokenised FX pairs (EURC/USDC on Base) from on-chain venues, an aggregator and Coinbase's order book. It then scores each quote against a traditional FX reference mid and stores the results in SQLite or Turso. The market mid comes only from TradingView (webhook). A public page lets users price a trade on demand, and a daily scheduled run builds history.
 
 ## Layout
 
@@ -34,7 +34,9 @@ src/execution_cost_tracker/
         uniswap_v4.py   # V4Quoter across candidate pool keys
         aerodrome.py    # Slipstream quoter + classic router
         zerox.py        # 0x Swap API /swap/permit2/price (ZEROX_API_KEY)
+        coinbase.py     # Coinbase EURC-USDC order book walk (COINBASE_API_KEY/SECRET via SDK, else public endpoint)
     reference.py     # ReferenceSource protocol; StoredMidReference (latest TradingView price) and StaticReference
+    orderbook.py     # order-book walk: size-weighted fill price across levels; pure
     metrics.py       # spread/bps math: pure functions, no network or I/O
     storage.py       # Turso (TURSO_DATABASE_URL) or local SQLite: reference_rates, quotes, failures, market_mids
     run.py           # one cycle: fetch all -> compute -> store -> print; CLI entry point
@@ -47,6 +49,8 @@ tests/
     test_guardrails.py # rate limiter, cache, guarded_quote (fake clock)
     test_market_hours.py # open/close boundaries across DST
     test_market_mid.py # TradingView webhook, market-mid status, vs-mid on quotes
+    test_orderbook.py # order-book walk worked examples
+    test_coinbase.py # Coinbase venue (fake book, fake SDK, fake HTTP), venue_params validation
     test_api.py      # HTTP routes via TestClient (skipped if fastapi/httpx missing)
 ```
 
@@ -59,7 +63,7 @@ python -m execution_cost_tracker.run --sizes 1000,10000 --no-store   # one live 
 uvicorn app:app --reload           # local API; docs at /docs
 ```
 
-Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `MAX_NOTIONAL`, `TRADINGVIEW_WEBHOOK_SECRET`. Secrets live in Vercel project settings or a local `.env`, never in code.
+Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `MAX_NOTIONAL`, `TRADINGVIEW_WEBHOOK_SECRET`, `COINBASE_API_KEY`, `COINBASE_API_SECRET`. Secrets live in Vercel project settings or a local `.env`, never in code.
 
 ## Conventions
 
@@ -72,9 +76,10 @@ Environment: `BASE_RPC_URL`, `ZEROX_API_KEY`, `CRON_SECRET`, `TURSO_DATABASE_URL
 - `ExecutionCostTracker.filter()` returns a new tracker and never mutates the original. `start` is inclusive and `end` is exclusive.
 - `metrics.py` stays pure: no network, clocks, or I/O.
 - **Venues:** subclass `Venue` and implement `simulate()`. Try candidate pools with `best_of()`, and raise `VenueError` when nothing quotes. Register new venues in `venues/__init__.py`.
+- **Coinbase:** `orderbook.py` stays pure. Pair settings live in `venue_params.coinbase` (`product_id`, `depth_limit`, `taker_fee_bps`), validated in `registry._check_venue_params`. A sell walks bids with `size` base; a buy walks asks spending `size * mid` quote. Too little depth raises `VenueError`.
 - A venue failure must never abort a cycle. `run_cycle` records it in `failures`.
 - Contract addresses live as per-chain dicts at the top of each venue module, each with a source comment. Verify new addresses against official docs or Basescan before adding them.
-- **Dependencies:** runtime deps (`fastapi`, `web3`, `turso_serverless`, `pyyaml`) are listed in `pyproject.toml` so Vercel installs them. Each is imported in exactly one place: `api.py`, `chain.py` (lazily), `storage.connect()` (only when Turso is configured), and `registry.load()`. Everything else uses the standard library only.
+- **Dependencies:** runtime deps (`fastapi`, `web3`, `turso_serverless`, `pyyaml`, `coinbase-advanced-py`) are listed in `pyproject.toml` so Vercel installs them. Each is imported in exactly one place: `api.py`, `chain.py` (lazily), `storage.connect()` (only when Turso is configured), `registry.load()`, and `venues/coinbase.fetch_book()` (lazily, only when Coinbase keys are set). Everything else uses the standard library only.
 - **Registry:** chains, tokens, pairs and limits live in `config.yaml`, never hard-coded. Code gets them from `registry.get()`. Adding a token or pair is a config change. Adding a chain also needs venue contract addresses in the venue modules. Any new field gets validation in `registry.parse()` and a test in `test_registry.py`.
 - **Front end:** `public/index.html` is one self-contained file that builds its form from `/api/config` and never holds keys. It calls only this app's `/api/...` endpoints. Keep it working with `side` = buy, sell or both, and with any number of venues.
 - **Guardrails:** every public quote goes through `service.guarded_quote`, which checks the cache, then the per-client limit, then the global limit. Network calls happen outside the lock. Only results with at least one quote are cached.

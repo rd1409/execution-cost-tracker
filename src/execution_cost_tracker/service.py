@@ -32,6 +32,7 @@ VENUE_LABELS = {
     "uniswap_v4": "Uniswap v4",
     "aerodrome": "Aerodrome",
     "zerox": "0x (aggregator)",
+    "coinbase": "Coinbase (order book)",
 }
 SIDE_CHOICES = ("both", "buy", "sell")
 

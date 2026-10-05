@@ -153,6 +153,7 @@ def parse(raw: object, source: str = "config") -> Registry:
             if (f"{base}/{quote}", chain_key) in seen:
                 raise fail(f"pair {base}/{quote} is listed twice on {chain_key}")
             seen.add((f"{base}/{quote}", chain_key))
+            _check_venue_params(p.get("venue_params"), f"{base}/{quote}", fail)
             pairs.append(
                 Pair(
                     base=chain.tokens[base],
@@ -216,6 +217,28 @@ def parse(raw: object, source: str = "config") -> Registry:
     if reg.market_mid_max_age_seconds <= 0:
         raise fail("market_mid.max_age_seconds must be positive")
     return reg
+
+
+def _check_venue_params(vp: object, pair: str, fail) -> None:
+    """Validate the per-venue settings that have known keys."""
+    if vp is None:
+        return
+    if not isinstance(vp, dict):
+        raise fail(f"pair {pair}: venue_params must be a mapping")
+    cb = vp.get("coinbase")
+    if cb is None:
+        return
+    if not isinstance(cb, dict):
+        raise fail(f"pair {pair}: venue_params.coinbase must be a mapping")
+    pid = cb.get("product_id")
+    if not isinstance(pid, str) or not re.match(r"^[A-Z0-9]+-[A-Z0-9]+$", pid):
+        raise fail(f"pair {pair}: coinbase.product_id must look like 'EURC-USDC', got {pid!r}")
+    depth = cb.get("depth_limit", 500)
+    if not isinstance(depth, int) or not 1 <= depth <= 10_000:
+        raise fail(f"pair {pair}: coinbase.depth_limit must be a whole number from 1 to 10000")
+    fee = cb.get("taker_fee_bps", 0)
+    if not isinstance(fee, (int, float)) or not 0 <= fee <= 100:
+        raise fail(f"pair {pair}: coinbase.taker_fee_bps must be between 0 and 100")
 
 
 @lru_cache(maxsize=1)

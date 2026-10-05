@@ -27,9 +27,13 @@ pairs:
     quote: USDC         # the token it's priced in
     reference: EUR/USD  # traditional FX pair it tracks
     chains: [base]
-    # Optional per-venue settings, e.g.
-    # venue_params:
-    #   uniswap_v3: {fee_tiers: [100, 500]}
+    venue_params:
+      coinbase:                 # Coinbase Advanced Trade order book (off-chain)
+        product_id: EURC-USDC   # Coinbase product to walk; omit to skip Coinbase for this pair
+        depth_limit: 500        # bid/ask levels to fetch; raise it if large sizes run out of depth
+        taker_fee_bps: 0        # your Coinbase taker fee in bps (e.g. 5 = 0.05%); deducted from proceeds
+      # Other optional per-venue settings, e.g.
+      # uniswap_v3: {fee_tiers: [100, 500]}
 
 limits:
   min_notional: 1             # smallest size a user can request (base-token units)

@@ -110,7 +110,7 @@ def test_config_view_for_front_end():
     assert [c["key"] for c in cfg["chains"]] == ["base"]
     pair = next(p for p in cfg["pairs"] if p["pair"] == "EURC/USDC")
     assert pair["chains"] == ["base"] and pair["reference"] == "EUR/USD"
-    assert set(pair["venues"]["base"]) == {"uniswap_v3", "uniswap_v4", "aerodrome", "zerox"}
+    assert set(pair["venues"]["base"]) == {"uniswap_v3", "uniswap_v4", "aerodrome", "zerox", "coinbase"}
     assert {v["name"]: v["label"] for v in cfg["venues"]}["zerox"] == "0x (aggregator)"
     assert cfg["sides"] == ["both", "buy", "sell"] and cfg["cross_chain"] is False
     assert cfg["limits"]["max_notional"] >= cfg["limits"]["min_notional"] > 0
@@ -131,7 +131,7 @@ def test_list_pairs():
     eurc = next(p for p in pairs if p["pair"] == "EURC/USDC")
     assert eurc["chain"] == "base" and eurc["reference"] == "EUR/USD"
     assert eurc["base"]["symbol"] == "EURC" and eurc["base"]["decimals"] == 6
-    assert set(eurc["venues"]) == {"uniswap_v3", "uniswap_v4", "aerodrome", "zerox"}
+    assert set(eurc["venues"]) == {"uniswap_v3", "uniswap_v4", "aerodrome", "zerox", "coinbase"}
 
 
 def test_quote_returns_json_ready_result():
