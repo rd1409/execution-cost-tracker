@@ -103,6 +103,18 @@ def test_relay_body_and_parse(monkeypatch):
     assert q.eta_seconds == 3 and q.meta["relayer_fee_usd"] == pytest.approx(0.15)
 
 
+def test_relay_key_is_trimmed(monkeypatch):
+    monkeypatch.setenv("RELAY_API_KEY", "  rk-123\n")
+    seen = {}
+
+    def post(url, body, headers):
+        seen["headers"] = headers
+        return RELAY_OK
+
+    Relay(http_post=post).quote(REG, "USDC", "base", "arbitrum", 10)
+    assert seen["headers"] == {"x-api-key": "rk-123"}
+
+
 def test_relay_needs_key_hint(monkeypatch):
     monkeypatch.delenv("RELAY_API_KEY", raising=False)
 

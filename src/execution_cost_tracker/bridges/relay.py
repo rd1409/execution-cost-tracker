@@ -39,7 +39,8 @@ class Relay(Bridge):
             "amount": str(ta.to_raw(amount)),
             "tradeType": "EXACT_INPUT",
         }
-        headers = {"x-api-key": os.environ["RELAY_API_KEY"]} if os.environ.get("RELAY_API_KEY") else {}
+        key = os.environ.get("RELAY_API_KEY", "").strip()  # pasted keys often carry a trailing newline
+        headers = {"x-api-key": key} if key else {}
         try:
             data = self._post(QUOTE_URL, body, headers)
         except httpjson.HttpError as e:
