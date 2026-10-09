@@ -25,7 +25,7 @@ def test_pairs(client):
 
 def test_index_serves_front_end(client):
     r = client.get("/")
-    assert r.status_code == 200 and "FX execution check" in r.text
+    assert r.status_code == 200 and "On-Chain FX Execution Check" in r.text
 
 
 def test_config(client):
